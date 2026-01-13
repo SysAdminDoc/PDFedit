@@ -3,9 +3,22 @@
 PDF Editor Pro v4.0 - Professional PDF Editing Suite
 A comprehensive Adobe Acrobat Pro alternative with modern UI
 
+NEW IN v4.0:
+- Undo/Redo: Ctrl+Z to undo, Ctrl+Y to redo (up to 30 steps)
+- Auto OCR: Documents without searchable text are automatically OCR'd in background
+- Background processing: OCR runs without locking the UI, with progress bar
+- LIVE Text Editing: 
+  - Double-click any text to instantly edit it
+  - Or use Edit Text tool and single-click
+  - Enter to apply, Escape to cancel
+- Interactive Image Placement:
+  - Drag to move image anywhere on the page
+  - Drag corners to resize (maintains aspect ratio)
+  - Enter to place, Escape to cancel
+- Cancel OCR: Stop background OCR processing anytime
+- Professional dark theme UI with ribbon toolbar
+
 Features:
-- Professional dark theme UI
-- Ribbon-style toolbar with tool groups
 - Multi-tab document interface
 - Search within documents
 - Bookmarks/Outline navigation
@@ -14,7 +27,6 @@ Features:
 - Watermarks, Headers & Footers
 - Bates numbering
 - Export to Word/Images
-- OCR with invisible text layer
 - Form filling
 - Merge, Split, Compress
 - Password protection
@@ -283,6 +295,7 @@ class ToolMode(Enum):
     SELECT = auto()
     PAN = auto()
     TEXT = auto()
+    TEXT_EDIT = auto()  # Edit existing text
     STICKY_NOTE = auto()
     HIGHLIGHT = auto()
     UNDERLINE = auto()
@@ -298,6 +311,16 @@ class ToolMode(Enum):
     REDACT = auto()
     CROP = auto()
     LINK = auto()
+
+@dataclass
+class TextBlock:
+    """Represents an editable text block in the PDF"""
+    page: int
+    rect: Tuple[float, float, float, float]
+    text: str
+    font_size: float
+    font_name: str
+    color: Tuple[float, float, float]
 
 @dataclass
 class SearchResult:
@@ -708,6 +731,93 @@ class PDFDocument:
         self.is_modified = False
         self.comments = []
         self._comment_counter = 0
+        
+        # Undo/Redo stacks - store document bytes
+        self._undo_stack = []
+        self._redo_stack = []
+        self._max_undo = 30  # Limit to prevent excessive memory usage
+    
+    def _save_undo_state(self):
+        """Save current document state for undo"""
+        if not self.doc:
+            return
+        try:
+            # Save document to bytes
+            state = self.doc.tobytes(garbage=0, deflate=False)
+            self._undo_stack.append({
+                'doc_bytes': state,
+                'comments': [Comment(c.id, c.page, c.x, c.y, c.content, c.author, c.date, c.color) 
+                            for c in self.comments],
+                'page': None  # Will be set by caller if needed
+            })
+            # Limit stack size
+            while len(self._undo_stack) > self._max_undo:
+                self._undo_stack.pop(0)
+            # Clear redo stack on new change
+            self._redo_stack.clear()
+        except Exception as e:
+            print(f"Save undo state error: {e}")
+    
+    def undo(self):
+        """Restore previous document state"""
+        if not self._undo_stack:
+            return False
+        
+        try:
+            # Save current state for redo
+            current_state = self.doc.tobytes(garbage=0, deflate=False)
+            self._redo_stack.append({
+                'doc_bytes': current_state,
+                'comments': [Comment(c.id, c.page, c.x, c.y, c.content, c.author, c.date, c.color) 
+                            for c in self.comments]
+            })
+            
+            # Restore previous state
+            state = self._undo_stack.pop()
+            self.doc.close()
+            self.doc = fitz.open(stream=state['doc_bytes'], filetype="pdf")
+            self.comments = state['comments']
+            self.is_modified = True
+            return True
+        except Exception as e:
+            print(f"Undo error: {e}")
+            return False
+    
+    def redo(self):
+        """Restore next document state (after undo)"""
+        if not self._redo_stack:
+            return False
+        
+        try:
+            # Save current state for undo
+            current_state = self.doc.tobytes(garbage=0, deflate=False)
+            self._undo_stack.append({
+                'doc_bytes': current_state,
+                'comments': [Comment(c.id, c.page, c.x, c.y, c.content, c.author, c.date, c.color) 
+                            for c in self.comments]
+            })
+            
+            # Restore redo state
+            state = self._redo_stack.pop()
+            self.doc.close()
+            self.doc = fitz.open(stream=state['doc_bytes'], filetype="pdf")
+            self.comments = state['comments']
+            self.is_modified = True
+            return True
+        except Exception as e:
+            print(f"Redo error: {e}")
+            return False
+    
+    def can_undo(self):
+        return len(self._undo_stack) > 0
+    
+    def can_redo(self):
+        return len(self._redo_stack) > 0
+    
+    def clear_undo_history(self):
+        """Clear undo/redo stacks (e.g., after save)"""
+        self._undo_stack.clear()
+        self._redo_stack.clear()
     
     def open(self, filepath):
         try:
@@ -788,8 +898,137 @@ class PDFDocument:
                 results.append(SearchResult(i, tuple(rect), query))
         return results
     
+    def get_text_blocks(self, page_num):
+        """Get all text blocks on a page for editing"""
+        page = self.get_page(page_num)
+        if not page:
+            return []
+        
+        blocks = []
+        text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+        
+        for block in text_dict.get("blocks", []):
+            if block.get("type") == 0:  # Text block
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        text = span.get("text", "").strip()
+                        if text:
+                            bbox = span.get("bbox", (0, 0, 0, 0))
+                            blocks.append(TextBlock(
+                                page=page_num,
+                                rect=tuple(bbox),
+                                text=text,
+                                font_size=span.get("size", 12),
+                                font_name=span.get("font", "helv"),
+                                color=self._extract_color(span.get("color", 0))
+                            ))
+        return blocks
+    
+    def _extract_color(self, color_int):
+        """Convert integer color to RGB tuple"""
+        if isinstance(color_int, (list, tuple)):
+            return tuple(color_int)
+        # Convert integer to RGB
+        b = (color_int >> 16) & 0xFF
+        g = (color_int >> 8) & 0xFF
+        r = color_int & 0xFF
+        return (r/255, g/255, b/255)
+    
+    def get_text_at_point(self, page_num, x, y):
+        """Find text block at a specific point"""
+        blocks = self.get_text_blocks(page_num)
+        for block in blocks:
+            r = block.rect
+            if r[0] <= x <= r[2] and r[1] <= y <= r[3]:
+                return block
+        return None
+    
+    def edit_text(self, page_num, old_rect, old_text, new_text, font_size=None, color=None):
+        """Edit text in place by redacting old and inserting new"""
+        page = self.get_page(page_num)
+        if not page:
+            return False
+        
+        try:
+            self._save_undo_state()
+            
+            # Create redaction annotation for old text area
+            rect = fitz.Rect(old_rect)
+            
+            # Expand rect slightly to ensure full coverage
+            rect = rect + (-1, -1, 1, 1)
+            
+            # Add redaction with white fill (to match page background)
+            page.add_redact_annot(rect, fill=(1, 1, 1))
+            page.apply_redactions()
+            
+            # Insert new text at the same position
+            if new_text.strip():
+                fs = font_size or 12
+                text_color = color or (0, 0, 0)
+                
+                # Calculate position (baseline)
+                x = old_rect[0]
+                y = old_rect[3] - 2  # Slightly above bottom
+                
+                page.insert_text(
+                    (x, y),
+                    new_text,
+                    fontsize=fs,
+                    fontname="helv",
+                    color=text_color
+                )
+            
+            self.is_modified = True
+            return True
+        except Exception as e:
+            print(f"Edit text error: {e}")
+            return False
+    
+    def delete_text(self, page_num, rect):
+        """Delete text in a region by redacting with white"""
+        page = self.get_page(page_num)
+        if not page:
+            return False
+        
+        try:
+            self._save_undo_state()
+            r = fitz.Rect(rect) + (-1, -1, 1, 1)
+            page.add_redact_annot(r, fill=(1, 1, 1))
+            page.apply_redactions()
+            self.is_modified = True
+            return True
+        except:
+            return False
+    
+    def insert_text_block(self, page_num, x, y, text, font_size=12, color=(0, 0, 0)):
+        """Insert a new text block"""
+        page = self.get_page(page_num)
+        if not page:
+            return False
+        
+        try:
+            self._save_undo_state()
+            page.insert_text((x, y), text, fontsize=font_size, fontname="helv", color=color)
+            self.is_modified = True
+            return True
+        except:
+            return False
+    
+    def has_text(self):
+        """Check if document has searchable text"""
+        if not self.doc or len(self.doc) == 0:
+            return False
+        # Check first few pages for text
+        for i in range(min(3, len(self.doc))):
+            text = self.get_text(i)
+            if text and len(text.strip()) > 20:
+                return True
+        return False
+    
     def delete_page(self, page_num):
         if self.doc and 0 <= page_num < len(self.doc) and len(self.doc) > 1:
+            self._save_undo_state()
             self.doc.delete_page(page_num)
             self.is_modified = True
             return True
@@ -797,6 +1036,7 @@ class PDFDocument:
     
     def insert_page(self, index=-1, width=612, height=792):
         if self.doc:
+            self._save_undo_state()
             if index < 0:
                 index = len(self.doc)
             self.doc.new_page(pno=index, width=width, height=height)
@@ -804,18 +1044,21 @@ class PDFDocument:
     
     def duplicate_page(self, page_num):
         if self.doc and 0 <= page_num < len(self.doc):
+            self._save_undo_state()
             self.doc.fullcopy_page(page_num, page_num + 1)
             self.is_modified = True
     
     def rotate_page(self, page_num, angle=90):
         page = self.get_page(page_num)
         if page:
+            self._save_undo_state()
             page.set_rotation((page.rotation + angle) % 360)
             self.is_modified = True
     
     def crop_page(self, page_num, rect):
         page = self.get_page(page_num)
         if page:
+            self._save_undo_state()
             page.set_cropbox(fitz.Rect(rect))
             self.is_modified = True
     
@@ -823,6 +1066,7 @@ class PDFDocument:
     def add_text(self, page_num, text, x, y, font_size=12, color=(0, 0, 0)):
         page = self.get_page(page_num)
         if page and text:
+            self._save_undo_state()
             fitz_color = tuple(c/255 for c in color) if max(color) > 1 else color
             page.insert_text((x, y), text, fontsize=font_size, fontname="helv", color=fitz_color)
             self.is_modified = True
@@ -830,6 +1074,7 @@ class PDFDocument:
     def add_highlight(self, page_num, rect, color=(1, 1, 0)):
         page = self.get_page(page_num)
         if page:
+            self._save_undo_state()
             annot = page.add_highlight_annot(fitz.Rect(rect))
             annot.set_colors(stroke=color)
             annot.update()
@@ -838,18 +1083,21 @@ class PDFDocument:
     def add_underline(self, page_num, rect):
         page = self.get_page(page_num)
         if page:
+            self._save_undo_state()
             page.add_underline_annot(fitz.Rect(rect)).update()
             self.is_modified = True
     
     def add_strikethrough(self, page_num, rect):
         page = self.get_page(page_num)
         if page:
+            self._save_undo_state()
             page.add_strikeout_annot(fitz.Rect(rect)).update()
             self.is_modified = True
     
     def add_rect(self, page_num, rect, color=(1, 0, 0), width=2):
         page = self.get_page(page_num)
         if page:
+            self._save_undo_state()
             shape = page.new_shape()
             shape.draw_rect(fitz.Rect(rect))
             shape.finish(color=color, width=width)
@@ -859,6 +1107,7 @@ class PDFDocument:
     def add_circle(self, page_num, rect, color=(1, 0, 0), width=2):
         page = self.get_page(page_num)
         if page:
+            self._save_undo_state()
             shape = page.new_shape()
             shape.draw_oval(fitz.Rect(rect))
             shape.finish(color=color, width=width)
@@ -868,6 +1117,7 @@ class PDFDocument:
     def add_line(self, page_num, p1, p2, color=(0, 0, 0), width=2):
         page = self.get_page(page_num)
         if page:
+            self._save_undo_state()
             shape = page.new_shape()
             shape.draw_line(p1, p2)
             shape.finish(color=color, width=width)
@@ -877,6 +1127,7 @@ class PDFDocument:
     def add_arrow(self, page_num, p1, p2, color=(0, 0, 0)):
         page = self.get_page(page_num)
         if page:
+            self._save_undo_state()
             annot = page.add_line_annot(fitz.Point(p1), fitz.Point(p2))
             annot.set_colors(stroke=color)
             annot.set_line_ends(fitz.PDF_ANNOT_LE_NONE, fitz.PDF_ANNOT_LE_CLOSED_ARROW)
@@ -887,6 +1138,7 @@ class PDFDocument:
     def add_freehand(self, page_num, points, color=(0, 0, 0), width=2):
         page = self.get_page(page_num)
         if page and len(points) >= 2:
+            self._save_undo_state()
             annot = page.add_ink_annot([points])
             annot.set_colors(stroke=color)
             annot.set_border(width=width)
@@ -911,6 +1163,7 @@ class PDFDocument:
                 x = (page.rect.width - width) / 2
             if y is None:
                 y = (page.rect.height - height) / 2
+            self._save_undo_state()
             page.insert_image(fitz.Rect(x, y, x+width, y+height), filename=image_path)
             self.is_modified = True
             return True
@@ -921,6 +1174,7 @@ class PDFDocument:
         page = self.get_page(page_num)
         if not page:
             return
+        self._save_undo_state()
         text = stamp['text']
         font_size = 14
         text_width = len(text) * font_size * 0.6
@@ -944,12 +1198,14 @@ class PDFDocument:
     def redact_area(self, page_num, rect):
         page = self.get_page(page_num)
         if page:
+            self._save_undo_state()
             page.add_redact_annot(fitz.Rect(rect), fill=(0, 0, 0))
             page.apply_redactions()
             self.is_modified = True
     
     # Comments
     def add_comment(self, page, x, y, content, author="User"):
+        self._save_undo_state()
         self._comment_counter += 1
         comment = Comment(f"c_{self._comment_counter}", page, x, y, content, author,
                          datetime.now().strftime("%Y-%m-%d %H:%M"))
@@ -1032,6 +1288,7 @@ class PDFDocument:
     def add_watermark(self, text, font_size=48, color=(0.8, 0.8, 0.8), angle=45):
         if not self.doc:
             return
+        self._save_undo_state()
         for page in self.doc:
             rect = page.rect
             cx, cy = rect.width / 2, rect.height / 2
@@ -1043,6 +1300,7 @@ class PDFDocument:
     def add_header_footer(self, header=None, footer=None, font_size=10, margin=36):
         if not self.doc:
             return
+        self._save_undo_state()
         for i, page in enumerate(self.doc):
             pw, ph = page.rect.width, page.rect.height
             page_num = i + 1
@@ -1065,6 +1323,7 @@ class PDFDocument:
     def add_bates_numbers(self, prefix="", start=1, digits=6, position="bottom-right", font_size=10, margin=36):
         if not self.doc:
             return
+        self._save_undo_state()
         for i, page in enumerate(self.doc):
             bates = f"{prefix}{start + i:0{digits}d}"
             pw, ph = page.rect.width, page.rect.height
@@ -1139,6 +1398,7 @@ class PDFDocument:
     
     def merge_pdf(self, other_path):
         if self.doc:
+            self._save_undo_state()
             other = fitz.open(other_path)
             self.doc.insert_pdf(other)
             other.close()
@@ -1185,20 +1445,36 @@ class OCREngine:
             pass
     
     @staticmethod
-    def make_searchable(doc, callback=None):
+    def make_searchable(doc, callback=None, cancel_flag=None):
+        """
+        Make document searchable with OCR.
+        callback: function(message, progress_percent) for progress updates
+        cancel_flag: list with single bool [False] - set to [True] to cancel
+        """
         try:
             import pytesseract
             OCREngine._configure()
         except:
             return False, 0
         
+        if cancel_flag is None:
+            cancel_flag = [False]
+        
         processed = 0
-        for pnum in range(doc.page_count):
+        total = doc.page_count
+        
+        for pnum in range(total):
+            # Check for cancellation
+            if cancel_flag[0]:
+                return False, processed
+            
             page = doc.get_page(pnum)
             if not page:
                 continue
+            
+            progress = int((pnum / total) * 100)
             if callback:
-                callback(f"Processing page {pnum + 1}...")
+                callback(f"OCR: Page {pnum + 1}/{total}", progress)
             
             img = doc.render_page(pnum, zoom=2.0)
             if not img:
@@ -1208,31 +1484,50 @@ class OCREngine:
             iw, ih = img.size
             sx, sy = pw / iw, ph / ih
             
-            data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-            
-            for i in range(len(data['text'])):
-                text = data['text'][i].strip()
-                conf = int(data['conf'][i]) if str(data['conf'][i]).lstrip('-').isdigit() else 0
-                if not text or conf < 30:
-                    continue
+            try:
+                data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
                 
-                x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-                px, py, pw_t, ph_t = x * sx, y * sy, w * sx, h * sy
+                for i in range(len(data['text'])):
+                    if cancel_flag[0]:
+                        return False, processed
+                    
+                    text = data['text'][i].strip()
+                    conf = int(data['conf'][i]) if str(data['conf'][i]).lstrip('-').isdigit() else 0
+                    if not text or conf < 30:
+                        continue
+                    
+                    x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+                    px, py, pw_t, ph_t = x * sx, y * sy, w * sx, h * sy
+                    
+                    fs = max(4, min(72, ph_t * 0.85))
+                    try:
+                        tl = fitz.get_text_length(text, fontsize=fs)
+                        if tl > 0 and pw_t > 0:
+                            fs = max(4, min(72, fs * (pw_t / tl)))
+                        page.insert_text((px, py + ph_t * 0.85), text, fontsize=fs,
+                                        fontname="helv", color=(0, 0, 0), render_mode=3)
+                    except:
+                        pass
                 
-                fs = max(4, min(72, ph_t * 0.85))
-                try:
-                    tl = fitz.get_text_length(text, fontsize=fs)
-                    if tl > 0 and pw_t > 0:
-                        fs = max(4, min(72, fs * (pw_t / tl)))
-                    page.insert_text((px, py + ph_t * 0.85), text, fontsize=fs,
-                                    fontname="helv", color=(0, 0, 0), render_mode=3)
-                except:
-                    pass
-            processed += 1
+                processed += 1
+            except Exception as e:
+                print(f"OCR error on page {pnum}: {e}")
+                continue
         
         if processed > 0:
             doc.is_modified = True
+        
+        if callback:
+            callback("OCR complete", 100)
+        
         return processed > 0, processed
+    
+    @staticmethod
+    def needs_ocr(doc):
+        """Check if document needs OCR (no searchable text)"""
+        if not doc or not doc.doc:
+            return False
+        return not doc.has_text()
 
 # ============================================================================
 # MAIN APPLICATION
@@ -1260,6 +1555,25 @@ class PDFEditorPro(tk.Tk):
         self.search_results = []
         self.selected_stamp = None
         self.sidebar_mode = "pages"
+        
+        # OCR state
+        self.ocr_thread = None
+        self.ocr_cancel_flag = [False]
+        self.ocr_in_progress = False
+        self.ocr_queue = []  # Queue of doc_ids to OCR
+        
+        # Text editing state
+        self.selected_text_block = None
+        self.text_blocks_cache = {}
+        self.inline_editor = None
+        self.inline_editor_frame = None
+        self.inline_editor_window = None
+        
+        # Image placement state
+        self.placing_image = None  # {'path': str, 'img': PIL.Image, 'x': float, 'y': float, 'width': float, 'height': float}
+        self.placing_image_tk = None  # PhotoImage for display
+        self.image_drag_start = None
+        self.image_resize_handle = None  # Which handle is being dragged
         
         self.config_data = Config.load()
         
@@ -1302,6 +1616,9 @@ class PDFEditorPro(tk.Tk):
         # Edit
         edit_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY,
                            activebackground=Theme.ACCENT, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
+        edit_menu.add_command(label="Undo", command=self._undo, accelerator="Ctrl+Z")
+        edit_menu.add_command(label="Redo", command=self._redo, accelerator="Ctrl+Y")
+        edit_menu.add_separator()
         edit_menu.add_command(label="Find...", command=self._show_search, accelerator="Ctrl+F")
         edit_menu.add_separator()
         edit_menu.add_command(label="Copy Text", command=self._copy_text)
@@ -1333,6 +1650,7 @@ class PDFEditorPro(tk.Tk):
         tools_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY,
                             activebackground=Theme.ACCENT, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
         tools_menu.add_command(label="Add Text", command=lambda: self._set_tool(ToolMode.TEXT))
+        tools_menu.add_command(label="Edit Text", command=lambda: self._set_tool(ToolMode.TEXT_EDIT))
         tools_menu.add_command(label="Add Comment", command=lambda: self._set_tool(ToolMode.STICKY_NOTE))
         tools_menu.add_command(label="Add Image...", command=self._add_image)
         tools_menu.add_command(label="Add Stamp...", command=self._show_stamp_dialog)
@@ -1430,6 +1748,14 @@ class PDFEditorPro(tk.Tk):
         
         ToolbarSeparator(toolbar).pack(side=tk.LEFT, padx=Theme.PAD_SM, pady=Theme.PAD_LG)
         
+        # Edit group (Undo/Redo)
+        edit_group = ToolbarGroup(toolbar, label="Edit")
+        edit_group.pack(side=tk.LEFT, padx=Theme.PAD_MD, pady=Theme.PAD_SM)
+        edit_group.add_button(icon="↶", label="Undo", command=self._undo, tooltip="Undo (Ctrl+Z)")
+        edit_group.add_button(icon="↷", label="Redo", command=self._redo, tooltip="Redo (Ctrl+Y)")
+        
+        ToolbarSeparator(toolbar).pack(side=tk.LEFT, padx=Theme.PAD_SM, pady=Theme.PAD_LG)
+        
         # Tools group
         tools_group = ToolbarGroup(toolbar, label="Tools")
         tools_group.pack(side=tk.LEFT, padx=Theme.PAD_MD, pady=Theme.PAD_SM)
@@ -1439,6 +1765,7 @@ class PDFEditorPro(tk.Tk):
             (ToolMode.SELECT, "👆", "Select"),
             (ToolMode.PAN, "✋", "Pan"),
             (ToolMode.TEXT, "T", "Text"),
+            (ToolMode.TEXT_EDIT, "✎", "Edit"),
             (ToolMode.STICKY_NOTE, "📝", "Comment"),
             (ToolMode.HIGHLIGHT, "🔆", "Highlight"),
             (ToolMode.DRAW, "✏️", "Draw"),
@@ -1613,10 +1940,12 @@ class PDFEditorPro(tk.Tk):
         
         # Canvas bindings
         self.canvas.bind("<Button-1>", self._canvas_click)
+        self.canvas.bind("<Double-Button-1>", self._canvas_double_click)
         self.canvas.bind("<B1-Motion>", self._canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self._canvas_release)
         self.canvas.bind("<MouseWheel>", self._canvas_scroll)
         self.canvas.bind("<Button-3>", self._canvas_context)
+        self.canvas.bind("<Motion>", self._canvas_motion)
     
     def _build_properties_panel(self, parent):
         self.props_panel = tk.Frame(parent, bg=Theme.BG_SECONDARY, width=220)
@@ -1642,6 +1971,26 @@ class PDFEditorPro(tk.Tk):
                                     font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
         self.status_left.pack(side=tk.LEFT, padx=Theme.PAD_MD, pady=Theme.PAD_SM)
         
+        # Progress bar for OCR
+        self.progress_frame = tk.Frame(status, bg=Theme.BG_PRIMARY)
+        self.progress_frame.pack(side=tk.LEFT, padx=Theme.PAD_MD, pady=Theme.PAD_SM)
+        
+        self.progress_label = tk.Label(self.progress_frame, text="", bg=Theme.BG_PRIMARY, fg=Theme.ACCENT_LIGHT,
+                                       font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
+        self.progress_label.pack(side=tk.LEFT, padx=(0, Theme.PAD_SM))
+        
+        self.progress_bar = tk.Canvas(self.progress_frame, width=200, height=12, 
+                                      bg=Theme.BG_TERTIARY, highlightthickness=0)
+        self.progress_bar.pack(side=tk.LEFT)
+        
+        self.progress_cancel = tk.Label(self.progress_frame, text="✕", bg=Theme.BG_PRIMARY, fg=Theme.FG_MUTED,
+                                        font=(Theme.FONT_FAMILY, 10), cursor="hand2")
+        self.progress_cancel.pack(side=tk.LEFT, padx=Theme.PAD_SM)
+        self.progress_cancel.bind("<Button-1>", lambda e: self._cancel_ocr())
+        
+        # Hide progress initially
+        self.progress_frame.pack_forget()
+        
         self.status_right = tk.Label(status, text="", bg=Theme.BG_PRIMARY, fg=Theme.FG_SECONDARY,
                                      font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
         self.status_right.pack(side=tk.RIGHT, padx=Theme.PAD_MD, pady=Theme.PAD_SM)
@@ -1651,14 +2000,32 @@ class PDFEditorPro(tk.Tk):
             ("<Control-n>", self._new_doc), ("<Control-o>", self._open_doc),
             ("<Control-s>", self._save_doc), ("<Control-w>", self._close_tab),
             ("<Control-f>", self._show_search),
+            ("<Control-z>", self._undo), ("<Control-y>", self._redo),
+            ("<Control-Shift-Z>", self._redo),
             ("<Control-plus>", self._zoom_in), ("<Control-minus>", self._zoom_out),
             ("<Control-equal>", self._zoom_in), ("<Control-0>", self._zoom_fit),
             ("<Home>", self._first_page), ("<End>", self._last_page),
             ("<Prior>", self._prev_page), ("<Next>", self._next_page),
-            ("<Delete>", self._delete_page), ("<Escape>", lambda: self._set_tool(ToolMode.SELECT)),
+            ("<Delete>", self._delete_page), 
+            ("<Escape>", self._handle_escape),
+            ("<Return>", self._handle_enter),
         ]
         for key, cmd in shortcuts:
             self.bind(key, lambda e, c=cmd: c())
+    
+    def _handle_escape(self):
+        """Handle Escape key"""
+        if self.placing_image:
+            self._cancel_image_placement()
+        elif hasattr(self, 'inline_editor') and self.inline_editor:
+            self._finish_inline_edit(apply=False)
+        else:
+            self._set_tool(ToolMode.SELECT)
+    
+    def _handle_enter(self):
+        """Handle Enter key"""
+        if self.placing_image:
+            self._place_image_confirm()
     
     # =========================================================================
     # SIDEBAR
@@ -1786,8 +2153,108 @@ class PDFEditorPro(tk.Tk):
             self._switch_to_doc(doc_id)
             self._add_recent(filepath)
             self._status(f"Opened: {doc.filename}")
+            
+            # Check if OCR is needed and available
+            self._check_and_start_auto_ocr(doc_id)
         else:
             messagebox.showerror("Error", "Failed to open PDF")
+    
+    def _check_and_start_auto_ocr(self, doc_id):
+        """Check if document needs OCR and start background processing"""
+        doc = self.documents.get(doc_id)
+        if not doc:
+            return
+        
+        # Check if OCR is available
+        ok, _ = OCREngine.is_available()
+        if not ok:
+            return
+        
+        # Check if document needs OCR
+        if OCREngine.needs_ocr(doc):
+            self._queue_ocr(doc_id)
+    
+    def _queue_ocr(self, doc_id):
+        """Add document to OCR queue"""
+        if doc_id not in self.ocr_queue:
+            self.ocr_queue.append(doc_id)
+        
+        # Start processing if not already running
+        if not self.ocr_in_progress:
+            self._process_ocr_queue()
+    
+    def _process_ocr_queue(self):
+        """Process next document in OCR queue"""
+        if not self.ocr_queue or self.ocr_in_progress:
+            return
+        
+        doc_id = self.ocr_queue.pop(0)
+        doc = self.documents.get(doc_id)
+        
+        if not doc:
+            # Document was closed, try next
+            self._process_ocr_queue()
+            return
+        
+        self.ocr_in_progress = True
+        self.ocr_cancel_flag = [False]
+        
+        # Show progress bar
+        self.progress_frame.pack(side=tk.LEFT, padx=Theme.PAD_MD, pady=Theme.PAD_SM, before=self.status_right)
+        self._update_progress("Starting OCR...", 0)
+        
+        # Start OCR in background thread
+        def ocr_worker():
+            try:
+                success, count = OCREngine.make_searchable(
+                    doc,
+                    callback=lambda msg, pct: self.after(0, lambda: self._update_progress(msg, pct)),
+                    cancel_flag=self.ocr_cancel_flag
+                )
+                self.after(0, lambda: self._ocr_background_complete(doc_id, success, count))
+            except Exception as e:
+                print(f"OCR error: {e}")
+                self.after(0, lambda: self._ocr_background_complete(doc_id, False, 0))
+        
+        self.ocr_thread = threading.Thread(target=ocr_worker, daemon=True)
+        self.ocr_thread.start()
+    
+    def _update_progress(self, message, percent):
+        """Update progress bar in status bar"""
+        self.progress_label.configure(text=message)
+        self.progress_bar.delete("all")
+        # Draw background
+        self.progress_bar.create_rectangle(0, 0, 200, 12, fill=Theme.BG_TERTIARY, outline="")
+        # Draw progress
+        if percent > 0:
+            width = int(200 * percent / 100)
+            self.progress_bar.create_rectangle(0, 0, width, 12, fill=Theme.ACCENT, outline="")
+    
+    def _cancel_ocr(self):
+        """Cancel ongoing OCR operation"""
+        self.ocr_cancel_flag[0] = True
+        self._status("Cancelling OCR...")
+    
+    def _ocr_background_complete(self, doc_id, success, count):
+        """Called when background OCR completes"""
+        self.ocr_in_progress = False
+        
+        # Hide progress bar
+        self.progress_frame.pack_forget()
+        
+        if success:
+            self._status(f"OCR complete: {count} pages processed")
+            # Refresh if this is the active document
+            if doc_id == self.active_doc_id:
+                self._render_page()
+                self._update_tab_title()
+        elif self.ocr_cancel_flag[0]:
+            self._status("OCR cancelled")
+        else:
+            self._status("OCR failed")
+        
+        # Process next in queue
+        self._process_ocr_queue()
     
     def _save_doc(self):
         if not self.doc:
@@ -1855,9 +2322,18 @@ class PDFEditorPro(tk.Tk):
     def _switch_to_doc(self, doc_id):
         if doc_id not in self.documents:
             return
+        
+        # Finish any inline editing first
+        if hasattr(self, 'inline_editor') and self.inline_editor:
+            self._finish_inline_edit(apply=True)
+        
         self.active_doc_id = doc_id
         self.current_page = 0
         self.zoom = 1.0
+        
+        # Clear text editing state
+        self.selected_text_block = None
+        self.text_blocks_cache = {}
         
         for did, tab in self.tabs.items():
             tab.set_active(did == doc_id)
@@ -1943,6 +2419,14 @@ class PDFEditorPro(tk.Tk):
                 self.canvas.create_rectangle(x1, y1, x2, y2, fill=Theme.HIGHLIGHT,
                                             stipple="gray50", outline="")
         
+        # Text editing overlays
+        if self.tool_mode == ToolMode.TEXT_EDIT:
+            self._render_text_blocks_overlay()
+        
+        # Image placement overlay
+        if self.placing_image:
+            self._render_placing_image()
+        
         self.canvas.configure(scrollregion=(0, 0, max(cw, iw+100), max(ch, ih+100)))
     
     def _show_welcome(self):
@@ -2016,6 +2500,50 @@ class PDFEditorPro(tk.Tk):
         self.status_left.configure(text=msg)
     
     # =========================================================================
+    # UNDO / REDO
+    # =========================================================================
+    
+    def _undo(self):
+        """Undo last change"""
+        if not self.doc:
+            return
+        
+        # Finish any inline editing first
+        if hasattr(self, 'inline_editor') and self.inline_editor:
+            self._finish_inline_edit(apply=False)
+        
+        if self.doc.can_undo():
+            if self.doc.undo():
+                # Clear text blocks cache as document changed
+                self.text_blocks_cache = {}
+                self._refresh_all()
+                self._status(f"Undo ({self.doc._undo_stack.__len__()} remaining)")
+            else:
+                self._status("Undo failed")
+        else:
+            self._status("Nothing to undo")
+    
+    def _redo(self):
+        """Redo last undone change"""
+        if not self.doc:
+            return
+        
+        # Finish any inline editing first
+        if hasattr(self, 'inline_editor') and self.inline_editor:
+            self._finish_inline_edit(apply=False)
+        
+        if self.doc.can_redo():
+            if self.doc.redo():
+                # Clear text blocks cache as document changed
+                self.text_blocks_cache = {}
+                self._refresh_all()
+                self._status(f"Redo ({self.doc._redo_stack.__len__()} remaining)")
+            else:
+                self._status("Redo failed")
+        else:
+            self._status("Nothing to redo")
+    
+    # =========================================================================
     # NAVIGATION
     # =========================================================================
     
@@ -2037,7 +2565,16 @@ class PDFEditorPro(tk.Tk):
     
     def _goto_page(self, page_num):
         if self.doc and 0 <= page_num < self.doc.page_count:
+            # Finish any inline editing first
+            if hasattr(self, 'inline_editor') and self.inline_editor:
+                self._finish_inline_edit(apply=True)
+            
+            # Cancel image placement
+            if self.placing_image:
+                self._cancel_image_placement()
+            
             self.current_page = page_num
+            self.selected_text_block = None  # Clear text selection on page change
             self._render_page()
             self._update_thumbnail_selection()
             self._update_properties()
@@ -2090,16 +2627,38 @@ class PDFEditorPro(tk.Tk):
     # =========================================================================
     
     def _set_tool(self, mode):
+        # Finish any inline editing first
+        if hasattr(self, 'inline_editor') and self.inline_editor:
+            self._finish_inline_edit(apply=True)
+        
+        # Cancel image placement if switching away from IMAGE mode
+        if mode != ToolMode.IMAGE and self.placing_image:
+            self._cancel_image_placement()
+            return  # _cancel_image_placement already sets SELECT
+        
         self.tool_mode = mode
         for m, btn in self.tool_buttons.items():
             btn.set_active(m == mode)
         
         cursors = {
             ToolMode.SELECT: "arrow", ToolMode.PAN: "fleur", ToolMode.TEXT: "xterm",
-            ToolMode.STICKY_NOTE: "plus", ToolMode.DRAW: "pencil", ToolMode.CROP: "cross",
+            ToolMode.TEXT_EDIT: "xterm", ToolMode.STICKY_NOTE: "plus", 
+            ToolMode.DRAW: "pencil", ToolMode.CROP: "cross", ToolMode.IMAGE: "fleur",
         }
         self.canvas.configure(cursor=cursors.get(mode, "cross"))
-        self._status(f"Tool: {mode.name.replace('_', ' ').title()}")
+        
+        # Clear text selection when switching tools
+        if mode != ToolMode.TEXT_EDIT:
+            self.selected_text_block = None
+            self._render_page()
+        
+        # Show appropriate status message
+        if mode == ToolMode.IMAGE and self.placing_image:
+            self._status("Drag to move  |  Corners to resize  |  Enter to place  |  Escape to cancel")
+        elif mode == ToolMode.TEXT_EDIT:
+            self._status(f"Tool: {mode.name.replace('_', ' ').title()} — Click on text to edit")
+        else:
+            self._status(f"Tool: {mode.name.replace('_', ' ').title()}")
     
     def _canvas_to_pdf(self, cx, cy):
         if not hasattr(self, 'img_offset'):
@@ -2117,12 +2676,74 @@ class PDFEditorPro(tk.Tk):
         
         px, py = self._canvas_to_pdf(cx, cy)
         
+        # Handle image placement mode
+        if self.placing_image:
+            # Check for resize handle
+            handle = self._check_image_handle(cx, cy)
+            if handle:
+                self.image_resize_handle = handle
+                self.image_drag_start = (cx, cy)
+                return
+            
+            # Check for image body (drag to move)
+            if self._check_image_body(cx, cy):
+                self.image_drag_start = (cx, cy)
+                self.image_resize_handle = None
+                return
+            
+            # Click outside image - place it
+            self._place_image_confirm()
+            return
+        
+        # If inline editing and clicked outside the editor, finish editing
+        if hasattr(self, 'inline_editor') and self.inline_editor:
+            # Check if click is outside the editor area
+            try:
+                editor_x = self.canvas.coords(self.inline_editor_window)[0]
+                editor_y = self.canvas.coords(self.inline_editor_window)[1]
+                editor_w = self.inline_editor_frame.winfo_width()
+                editor_h = self.inline_editor_frame.winfo_height()
+                
+                if not (editor_x <= cx <= editor_x + editor_w and editor_y <= cy <= editor_y + editor_h):
+                    self._finish_inline_edit(apply=True)
+                    return
+            except:
+                pass
+        
         if self.tool_mode == ToolMode.TEXT:
             self._text_dialog(px, py)
+        elif self.tool_mode == ToolMode.TEXT_EDIT:
+            self._handle_text_edit_click(px, py)
         elif self.tool_mode == ToolMode.STICKY_NOTE:
             self._comment_dialog(px, py)
         elif self.tool_mode == ToolMode.STAMP and self.selected_stamp:
             self.doc.add_stamp(self.current_page, px, py, self.selected_stamp)
+            self._render_page()
+    
+    def _canvas_double_click(self, e):
+        """Handle double-click to instantly edit text"""
+        if not self.doc:
+            return
+        
+        # Don't interfere with image placement
+        if self.placing_image:
+            return
+        
+        cx = self.canvas.canvasx(e.x)
+        cy = self.canvas.canvasy(e.y)
+        px, py = self._canvas_to_pdf(cx, cy)
+        
+        # Check if there's text at this position
+        text_block = self.doc.get_text_at_point(self.current_page, px, py)
+        
+        if text_block:
+            # Switch to text edit mode and start editing
+            self.tool_mode = ToolMode.TEXT_EDIT
+            for m, btn in self.tool_buttons.items():
+                btn.set_active(m == ToolMode.TEXT_EDIT)
+            
+            self.selected_text_block = text_block
+            self._start_inline_edit(text_block)
             self._render_page()
     
     def _canvas_drag(self, e):
@@ -2131,6 +2752,52 @@ class PDFEditorPro(tk.Tk):
         
         cx = self.canvas.canvasx(e.x)
         cy = self.canvas.canvasy(e.y)
+        
+        # Handle image placement dragging
+        if self.placing_image and self.image_drag_start:
+            dx = (cx - self.image_drag_start[0]) / self.zoom
+            dy = (cy - self.image_drag_start[1]) / self.zoom
+            
+            if self.image_resize_handle:
+                # Resizing
+                pi = self.placing_image
+                handle = self.image_resize_handle
+                
+                # Calculate new dimensions maintaining aspect ratio
+                aspect = pi['original_height'] / pi['original_width']
+                
+                if handle == "se":
+                    new_width = pi['width'] + dx
+                    new_height = new_width * aspect
+                elif handle == "sw":
+                    new_width = pi['width'] - dx
+                    new_height = new_width * aspect
+                    if new_width > 20:
+                        pi['x'] += dx
+                elif handle == "ne":
+                    new_width = pi['width'] + dx
+                    new_height = new_width * aspect
+                    if new_width > 20:
+                        pi['y'] -= (new_height - pi['height'])
+                elif handle == "nw":
+                    new_width = pi['width'] - dx
+                    new_height = new_width * aspect
+                    if new_width > 20:
+                        pi['x'] += dx
+                        pi['y'] -= (new_height - pi['height'])
+                
+                # Apply constraints
+                if new_width > 20 and new_height > 20:
+                    pi['width'] = new_width
+                    pi['height'] = new_height
+            else:
+                # Moving
+                self.placing_image['x'] += dx
+                self.placing_image['y'] += dy
+            
+            self.image_drag_start = (cx, cy)
+            self._render_page()
+            return
         
         if self.tool_mode == ToolMode.PAN:
             dx = cx - self.drag_start[0]
@@ -2165,6 +2832,12 @@ class PDFEditorPro(tk.Tk):
     
     def _canvas_release(self, e):
         if not self.doc or not self.drag_start:
+            return
+        
+        # End image dragging
+        if self.placing_image and self.image_drag_start:
+            self.image_drag_start = None
+            self.image_resize_handle = None
             return
         
         cx = self.canvas.canvasx(e.x)
@@ -2225,6 +2898,27 @@ class PDFEditorPro(tk.Tk):
         menu.add_separator()
         menu.add_command(label="Copy Page Text", command=self._copy_text)
         menu.tk_popup(e.x_root, e.y_root)
+    
+    def _canvas_motion(self, e):
+        """Handle mouse motion for cursor updates"""
+        if not self.placing_image:
+            return
+        
+        cx = self.canvas.canvasx(e.x)
+        cy = self.canvas.canvasy(e.y)
+        
+        # Check for resize handles
+        handle = self._check_image_handle(cx, cy)
+        if handle:
+            cursor_map = {
+                "nw": "top_left_corner", "ne": "top_right_corner",
+                "sw": "bottom_left_corner", "se": "bottom_right_corner"
+            }
+            self.canvas.configure(cursor=cursor_map.get(handle, "fleur"))
+        elif self._check_image_body(cx, cy):
+            self.canvas.configure(cursor="fleur")
+        else:
+            self.canvas.configure(cursor="arrow")
     
     def _page_context(self, e, page_num):
         menu = tk.Menu(self, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY)
@@ -2458,6 +3152,221 @@ class PDFEditorPro(tk.Tk):
         ModernButton(dialog, text="Save Protected", command=apply, style="primary", width=140).pack(pady=Theme.PAD_LG)
     
     # =========================================================================
+    # TEXT EDITING - INLINE
+    # =========================================================================
+    
+    def _handle_text_edit_click(self, x, y):
+        """Handle click in text edit mode - start inline editing"""
+        if not self.doc:
+            return
+        
+        # If already editing, finish current edit first
+        if hasattr(self, 'inline_editor') and self.inline_editor:
+            self._finish_inline_edit()
+        
+        # Find text block at click position
+        text_block = self.doc.get_text_at_point(self.current_page, x, y)
+        
+        if text_block:
+            self.selected_text_block = text_block
+            self._start_inline_edit(text_block)
+        else:
+            # No text at this position - offer to add new text
+            self.selected_text_block = None
+            self._render_page()
+            self._start_new_text_at(x, y)
+    
+    def _start_inline_edit(self, text_block):
+        """Create inline editor directly on canvas"""
+        # Calculate screen position from PDF coordinates
+        r = text_block.rect
+        x1 = self.img_offset[0] + r[0] * self.zoom
+        y1 = self.img_offset[1] + r[1] * self.zoom
+        x2 = self.img_offset[0] + r[2] * self.zoom
+        y2 = self.img_offset[1] + r[3] * self.zoom
+        
+        # Create frame to hold editor
+        self.inline_editor_frame = tk.Frame(self.canvas, bg=Theme.ACCENT, padx=2, pady=2)
+        
+        # Calculate font size for editor (approximate)
+        editor_font_size = max(10, min(36, int(text_block.font_size * self.zoom * 0.9)))
+        
+        # Create text entry
+        self.inline_editor = tk.Entry(
+            self.inline_editor_frame,
+            font=(Theme.FONT_FAMILY, editor_font_size),
+            bg="white",
+            fg="black",
+            insertbackground="black",
+            relief=tk.FLAT,
+            width=max(10, len(text_block.text) + 5)
+        )
+        self.inline_editor.pack()
+        self.inline_editor.insert(0, text_block.text)
+        self.inline_editor.select_range(0, tk.END)
+        
+        # Position on canvas
+        width = max(150, int(x2 - x1) + 50)
+        height = int(y2 - y1) + 8
+        
+        # Adjust position to account for canvas scrolling
+        canvas_x = x1 - 2
+        canvas_y = y1 - 2
+        
+        self.inline_editor_window = self.canvas.create_window(
+            canvas_x, canvas_y,
+            window=self.inline_editor_frame,
+            anchor=tk.NW
+        )
+        
+        # Store original text for cancel
+        self.inline_edit_original = text_block.text
+        self.inline_edit_block = text_block
+        
+        # Bind keys
+        self.inline_editor.bind("<Return>", lambda e: self._finish_inline_edit(apply=True))
+        self.inline_editor.bind("<Escape>", lambda e: self._finish_inline_edit(apply=False))
+        self.inline_editor.bind("<FocusOut>", lambda e: self._finish_inline_edit(apply=True))
+        
+        # Focus the editor
+        self.inline_editor.focus_set()
+        
+        # Show helper text in status
+        self._status("Enter: Apply  |  Escape: Cancel  |  Click elsewhere: Apply")
+    
+    def _start_new_text_at(self, x, y):
+        """Start inline editor for new text"""
+        # Calculate screen position
+        cx = self.img_offset[0] + x * self.zoom
+        cy = self.img_offset[1] + y * self.zoom
+        
+        # Create frame
+        self.inline_editor_frame = tk.Frame(self.canvas, bg=Theme.SUCCESS, padx=2, pady=2)
+        
+        # Create text entry
+        self.inline_editor = tk.Entry(
+            self.inline_editor_frame,
+            font=(Theme.FONT_FAMILY, 12),
+            bg="white",
+            fg="black",
+            insertbackground="black",
+            relief=tk.FLAT,
+            width=30
+        )
+        self.inline_editor.pack()
+        
+        # Position on canvas
+        self.inline_editor_window = self.canvas.create_window(
+            cx, cy,
+            window=self.inline_editor_frame,
+            anchor=tk.NW
+        )
+        
+        # Store as new text mode
+        self.inline_edit_original = None
+        self.inline_edit_block = None
+        self.inline_edit_new_pos = (x, y)
+        
+        # Bind keys
+        self.inline_editor.bind("<Return>", lambda e: self._finish_inline_edit(apply=True))
+        self.inline_editor.bind("<Escape>", lambda e: self._finish_inline_edit(apply=False))
+        
+        self.inline_editor.focus_set()
+        self._status("Type new text  |  Enter: Add  |  Escape: Cancel")
+    
+    def _finish_inline_edit(self, apply=True):
+        """Complete inline editing"""
+        if not hasattr(self, 'inline_editor') or not self.inline_editor:
+            return
+        
+        try:
+            new_text = self.inline_editor.get().strip()
+            
+            if apply and new_text:
+                if self.inline_edit_block:
+                    # Editing existing text
+                    block = self.inline_edit_block
+                    if new_text != self.inline_edit_original:
+                        self.doc.edit_text(
+                            self.current_page,
+                            block.rect,
+                            block.text,
+                            new_text,
+                            font_size=block.font_size
+                        )
+                        # Clear cache for this page
+                        cache_key = f"{self.active_doc_id}_{self.current_page}"
+                        if cache_key in self.text_blocks_cache:
+                            del self.text_blocks_cache[cache_key]
+                        self._status(f"Text updated")
+                else:
+                    # Adding new text
+                    x, y = self.inline_edit_new_pos
+                    self.doc.insert_text_block(self.current_page, x, y + 12, new_text, font_size=12)
+                    self._status("Text added")
+            elif apply and not new_text and self.inline_edit_block:
+                # Empty text = delete
+                if messagebox.askyesno("Delete Text", "Delete this text?"):
+                    self.doc.delete_text(self.current_page, self.inline_edit_block.rect)
+                    cache_key = f"{self.active_doc_id}_{self.current_page}"
+                    if cache_key in self.text_blocks_cache:
+                        del self.text_blocks_cache[cache_key]
+                    self._status("Text deleted")
+            
+            # Clean up editor
+            self.canvas.delete(self.inline_editor_window)
+            self.inline_editor_frame.destroy()
+            self.inline_editor = None
+            self.inline_editor_frame = None
+            self.inline_edit_block = None
+            self.selected_text_block = None
+            
+            # Refresh display
+            self._render_page()
+            self._refresh_thumbnails()
+            
+        except Exception as e:
+            print(f"Inline edit error: {e}")
+            # Clean up on error
+            if hasattr(self, 'inline_editor_frame') and self.inline_editor_frame:
+                try:
+                    self.canvas.delete(self.inline_editor_window)
+                    self.inline_editor_frame.destroy()
+                except:
+                    pass
+            self.inline_editor = None
+            self._render_page()
+    
+    def _render_text_blocks_overlay(self):
+        """Draw overlay showing text blocks in edit mode"""
+        if self.tool_mode != ToolMode.TEXT_EDIT or not self.doc:
+            return
+        
+        # Get text blocks for current page (use cache)
+        cache_key = f"{self.active_doc_id}_{self.current_page}"
+        if cache_key not in self.text_blocks_cache:
+            self.text_blocks_cache[cache_key] = self.doc.get_text_blocks(self.current_page)
+        
+        blocks = self.text_blocks_cache[cache_key]
+        
+        for block in blocks:
+            r = block.rect
+            x1 = self.img_offset[0] + r[0] * self.zoom
+            y1 = self.img_offset[1] + r[1] * self.zoom
+            x2 = self.img_offset[0] + r[2] * self.zoom
+            y2 = self.img_offset[1] + r[3] * self.zoom
+            
+            # Highlight selected block
+            if self.selected_text_block and block.rect == self.selected_text_block.rect:
+                self.canvas.create_rectangle(x1-2, y1-2, x2+2, y2+2, 
+                                            outline=Theme.ACCENT, width=2, tags="text_overlay")
+            else:
+                # Subtle hover indication for other blocks
+                self.canvas.create_rectangle(x1, y1, x2, y2, 
+                                            outline=Theme.BORDER_LIGHT, width=1, 
+                                            dash=(2, 2), tags="text_overlay")
+    
+    # =========================================================================
     # SEARCH
     # =========================================================================
     
@@ -2553,11 +3462,158 @@ class PDFEditorPro(tk.Tk):
     def _add_image(self):
         if not self.doc:
             return
-        filepath = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.bmp")])
+        filepath = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.bmp *.webp")])
         if filepath:
-            if self.doc.add_image(self.current_page, filepath):
-                self._render_page()
-                self._status("Image added")
+            self._start_image_placement(filepath)
+    
+    def _start_image_placement(self, filepath):
+        """Start interactive image placement"""
+        try:
+            img = Image.open(filepath)
+            iw, ih = img.size
+            
+            # Scale to reasonable size
+            max_size = 300
+            scale = min(max_size / iw, max_size / ih, 1.0)
+            width, height = iw * scale, ih * scale
+            
+            # Get page center in PDF coordinates
+            pw, ph = self.doc.get_page_size(self.current_page)
+            x = (pw - width) / 2
+            y = (ph - height) / 2
+            
+            self.placing_image = {
+                'path': filepath,
+                'img': img,
+                'x': x,
+                'y': y,
+                'width': width,
+                'height': height,
+                'original_width': iw,
+                'original_height': ih
+            }
+            
+            # Switch to image placement mode
+            self._set_tool(ToolMode.IMAGE)
+            self._render_page()
+            self._status("Drag to move  |  Corners to resize  |  Enter to place  |  Escape to cancel")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load image: {e}")
+    
+    def _render_placing_image(self):
+        """Render the image being placed as overlay"""
+        if not self.placing_image:
+            return
+        
+        pi = self.placing_image
+        
+        # Convert PDF coords to canvas coords
+        x1 = self.img_offset[0] + pi['x'] * self.zoom
+        y1 = self.img_offset[1] + pi['y'] * self.zoom
+        x2 = x1 + pi['width'] * self.zoom
+        y2 = y1 + pi['height'] * self.zoom
+        
+        # Create scaled image for display
+        display_width = int(pi['width'] * self.zoom)
+        display_height = int(pi['height'] * self.zoom)
+        
+        if display_width > 0 and display_height > 0:
+            resized = pi['img'].resize((display_width, display_height), Image.Resampling.LANCZOS)
+            self.placing_image_tk = ImageTk.PhotoImage(resized)
+            
+            # Draw image
+            self.canvas.create_image(x1, y1, image=self.placing_image_tk, anchor=tk.NW, tags="placing_image")
+            
+            # Draw selection border
+            self.canvas.create_rectangle(x1-1, y1-1, x2+1, y2+1, 
+                                        outline=Theme.ACCENT, width=2, tags="placing_image")
+            
+            # Draw resize handles (corners)
+            handle_size = 8
+            handles = [
+                (x1, y1, "nw"), (x2, y1, "ne"),
+                (x1, y2, "sw"), (x2, y2, "se")
+            ]
+            for hx, hy, cursor in handles:
+                self.canvas.create_rectangle(
+                    hx - handle_size/2, hy - handle_size/2,
+                    hx + handle_size/2, hy + handle_size/2,
+                    fill=Theme.ACCENT, outline="white", tags=f"img_handle_{cursor}"
+                )
+            
+            # Draw size info
+            self.canvas.create_text(
+                (x1 + x2) / 2, y2 + 20,
+                text=f"{int(pi['width'])} × {int(pi['height'])} px",
+                fill=Theme.FG_PRIMARY, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_XS),
+                tags="placing_image"
+            )
+    
+    def _check_image_handle(self, cx, cy):
+        """Check if click is on a resize handle"""
+        if not self.placing_image:
+            return None
+        
+        pi = self.placing_image
+        x1 = self.img_offset[0] + pi['x'] * self.zoom
+        y1 = self.img_offset[1] + pi['y'] * self.zoom
+        x2 = x1 + pi['width'] * self.zoom
+        y2 = y1 + pi['height'] * self.zoom
+        
+        handle_size = 12
+        handles = {
+            "nw": (x1, y1), "ne": (x2, y1),
+            "sw": (x1, y2), "se": (x2, y2)
+        }
+        
+        for name, (hx, hy) in handles.items():
+            if abs(cx - hx) < handle_size and abs(cy - hy) < handle_size:
+                return name
+        return None
+    
+    def _check_image_body(self, cx, cy):
+        """Check if click is inside the image body"""
+        if not self.placing_image:
+            return False
+        
+        pi = self.placing_image
+        x1 = self.img_offset[0] + pi['x'] * self.zoom
+        y1 = self.img_offset[1] + pi['y'] * self.zoom
+        x2 = x1 + pi['width'] * self.zoom
+        y2 = y1 + pi['height'] * self.zoom
+        
+        return x1 <= cx <= x2 and y1 <= cy <= y2
+    
+    def _place_image_confirm(self):
+        """Confirm and place the image into the PDF"""
+        if not self.placing_image or not self.doc:
+            return
+        
+        pi = self.placing_image
+        
+        # Save to temp file if needed (for proper insertion)
+        self.doc.add_image(
+            self.current_page, 
+            pi['path'],
+            x=pi['x'], 
+            y=pi['y'], 
+            width=pi['width'], 
+            height=pi['height']
+        )
+        
+        self._cancel_image_placement()
+        self._render_page()
+        self._refresh_thumbnails()
+        self._status("Image placed")
+    
+    def _cancel_image_placement(self):
+        """Cancel image placement"""
+        self.placing_image = None
+        self.placing_image_tk = None
+        self.image_drag_start = None
+        self.image_resize_handle = None
+        self._set_tool(ToolMode.SELECT)
+        self._render_page()
     
     def _copy_text(self):
         if self.doc:
@@ -2612,26 +3668,15 @@ class PDFEditorPro(tk.Tk):
             messagebox.showerror("OCR Unavailable", msg)
             return
         
-        if not messagebox.askyesno("OCR", "Make document searchable?\nThis may take a while."):
-            return
+        # Check if already has text
+        if self.doc.has_text():
+            if not messagebox.askyesno("OCR", "Document already has searchable text.\nRun OCR anyway?"):
+                return
         
-        dialog = self._create_dialog("OCR Processing", 300, 100)
-        label = tk.Label(dialog, text="Processing...", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY)
-        label.pack(expand=True)
-        
-        def run():
-            ok, count = OCREngine.make_searchable(self.doc, lambda m: self.after(0, lambda: label.configure(text=m)))
-            self.after(0, lambda: self._ocr_done(ok, count, dialog))
-        
-        threading.Thread(target=run, daemon=True).start()
-    
-    def _ocr_done(self, ok, count, dialog):
-        dialog.destroy()
-        if ok:
-            self._render_page()
-            messagebox.showinfo("OCR Complete", f"Processed {count} pages.\nDocument is now searchable.")
-        else:
-            messagebox.showerror("OCR Failed", "OCR processing failed")
+        # Queue OCR for current document
+        if self.active_doc_id:
+            self._queue_ocr(self.active_doc_id)
+            self._status("OCR queued...")
     
     # =========================================================================
     # EXPORTS
@@ -2728,6 +3773,12 @@ FILE
   Ctrl+S    Save
   Ctrl+W    Close tab
 
+EDIT
+  Ctrl+Z    Undo
+  Ctrl+Y    Redo
+  Ctrl+F    Find text
+  Dbl-Click Edit text under cursor
+
 NAVIGATION
   Home      First page
   End       Last page
@@ -2740,9 +3791,9 @@ VIEW
   Ctrl+0    Fit page
 
 TOOLS
-  Escape    Select tool
+  Escape    Cancel / Select tool
+  Enter     Confirm placement
   Delete    Delete page
-  Ctrl+F    Find text
 """
         messagebox.showinfo("Keyboard Shortcuts", shortcuts)
     
@@ -2768,6 +3819,17 @@ TOOLS
     # =========================================================================
     
     def _on_close(self):
+        # Cancel any ongoing OCR
+        if self.ocr_in_progress:
+            self.ocr_cancel_flag[0] = True
+        
+        # Finish any inline editing
+        if hasattr(self, 'inline_editor') and self.inline_editor:
+            try:
+                self._finish_inline_edit(apply=False)
+            except:
+                pass
+        
         for doc in self.documents.values():
             if doc.is_modified:
                 r = messagebox.askyesnocancel("Save Changes?", f"Save changes to {doc.filename}?")
