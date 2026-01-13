@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
 """
-PDF Editor Pro v2.0 - Professional PDF Editing Suite
+PDF Editor Pro v3.0 - Professional PDF Editing Suite
 A comprehensive Adobe Acrobat Pro alternative
 
-Features:
+NEW IN v3.0:
+- Full menu bar with all operations
+- Stamps library (Approved, Draft, Confidential, etc.)
+- Watermarks (text-based)
+- Headers & Footers with page numbers
+- Bates numbering for legal documents
+- Export to Word (.docx)
+- Export to Images (PNG/JPG)
+- Flatten annotations
+- Password protection
+- Document properties editor
+- Split document into separate files
+
+EXISTING FEATURES:
 - Multi-tab document interface
 - Search within documents (Ctrl+F)
 - Bookmarks/Outline navigation
 - Comments & Sticky Notes
 - Form filling
-- Undo/Redo system
-- Properties panel
 - Compress/Optimize PDF
 - Crop pages
 - Recent files
@@ -108,14 +119,14 @@ def pip_install(pkg):
 
 def check_and_install_dependencies():
     required = {'PIL': 'Pillow', 'fitz': 'PyMuPDF'}
-    optional = {'pytesseract': 'pytesseract'}
+    optional = {'pytesseract': 'pytesseract', 'docx': 'python-docx'}
     missing_req = [p for i, p in required.items() if not _try_import(i)]
     missing_opt = [p for i, p in optional.items() if not _try_import(i)]
     tesseract_needed = get_tesseract_path() is None
     
     if missing_req or missing_opt or tesseract_needed:
         print("\n╔══════════════════════════════════════════════════════════╗")
-        print("║         PDF Editor Pro v2.0 - First Run Setup            ║")
+        print("║         PDF Editor Pro v3.0 - First Run Setup            ║")
         print("╚══════════════════════════════════════════════════════════╝\n")
         for pkg in missing_req + missing_opt:
             print(f"  Installing {pkg}...", end=" ", flush=True)
@@ -158,6 +169,27 @@ from typing import Optional, List, Tuple, Dict, Callable, Any
 from enum import Enum, auto
 from collections import deque
 import copy
+import math
+
+# Try importing python-docx for Word export
+try:
+    from docx import Document as DocxDocument
+    from docx.shared import Inches, Pt
+    HAS_DOCX = True
+except ImportError:
+    HAS_DOCX = False
+
+# Predefined stamps
+BUILTIN_STAMPS = [
+    {"name": "Approved", "text": "APPROVED", "color": "#ffffff", "bg": "#22c55e"},
+    {"name": "Rejected", "text": "REJECTED", "color": "#ffffff", "bg": "#ef4444"},
+    {"name": "Draft", "text": "DRAFT", "color": "#000000", "bg": "#fbbf24"},
+    {"name": "Final", "text": "FINAL", "color": "#ffffff", "bg": "#3b82f6"},
+    {"name": "Confidential", "text": "CONFIDENTIAL", "color": "#ffffff", "bg": "#dc2626"},
+    {"name": "For Review", "text": "FOR REVIEW", "color": "#000000", "bg": "#f97316"},
+    {"name": "Void", "text": "VOID", "color": "#ffffff", "bg": "#6b7280"},
+    {"name": "Copy", "text": "COPY", "color": "#000000", "bg": "#a3e635"},
+]
 
 # ============================================================================
 # CONFIGURATION
@@ -404,6 +436,11 @@ class PDFDocument:
             self.doc.new_page(pno=index, width=width, height=height)
             self.is_modified = True
     
+    def duplicate_page(self, page_num: int):
+        if self.doc and 0 <= page_num < len(self.doc):
+            self.doc.fullcopy_page(page_num, page_num + 1)
+            self.is_modified = True
+    
     def rotate_page(self, page_num: int, angle: int = 90):
         page = self.get_page(page_num)
         if page:
@@ -620,6 +657,179 @@ class PDFDocument:
             return True
         except:
             return False
+    
+    # Watermarks
+    def add_watermark(self, text: str, font_size: int = 48, color: Tuple = (0.8, 0.8, 0.8),
+                      angle: float = 45, pages: List[int] = None):
+        if not self.doc:
+            return
+        pages = pages or range(len(self.doc))
+        for pnum in pages:
+            page = self.get_page(pnum)
+            if not page:
+                continue
+            rect = page.rect
+            cx, cy = rect.width / 2, rect.height / 2
+            text_width = len(text) * font_size * 0.5
+            page.insert_text(
+                fitz.Point(cx - text_width/2, cy + font_size/3),
+                text, fontsize=font_size, fontname="helv",
+                color=color, rotate=angle
+            )
+        self.is_modified = True
+    
+    # Headers & Footers
+    def add_header_footer(self, header: str = None, footer: str = None,
+                         font_size: int = 10, margin: float = 36,
+                         pages: List[int] = None, start_page: int = 1):
+        if not self.doc:
+            return
+        pages = pages or range(len(self.doc))
+        for i, pnum in enumerate(pages):
+            page = self.get_page(pnum)
+            if not page:
+                continue
+            pw, ph = page.rect.width, page.rect.height
+            page_num = start_page + i
+            
+            def process_text(txt):
+                if not txt:
+                    return None
+                txt = txt.replace("{page}", str(page_num))
+                txt = txt.replace("{pages}", str(len(self.doc)))
+                txt = txt.replace("{date}", datetime.now().strftime("%Y-%m-%d"))
+                txt = txt.replace("{filename}", self.filename)
+                return txt
+            
+            if header:
+                h_text = process_text(header)
+                text_width = len(h_text) * font_size * 0.4
+                x = (pw - text_width) / 2
+                page.insert_text((x, margin), h_text, fontsize=font_size, fontname="helv", color=(0, 0, 0))
+            
+            if footer:
+                f_text = process_text(footer)
+                text_width = len(f_text) * font_size * 0.4
+                x = (pw - text_width) / 2
+                page.insert_text((x, ph - margin + font_size), f_text, fontsize=font_size, fontname="helv", color=(0, 0, 0))
+        self.is_modified = True
+    
+    # Bates Numbering
+    def add_bates_numbers(self, prefix: str = "", start: int = 1, digits: int = 6,
+                         suffix: str = "", position: str = "bottom-right",
+                         font_size: int = 10, margin: float = 36):
+        if not self.doc:
+            return
+        for i, page in enumerate(self.doc):
+            num = start + i
+            bates = f"{prefix}{num:0{digits}d}{suffix}"
+            pw, ph = page.rect.width, page.rect.height
+            text_width = len(bates) * font_size * 0.5
+            positions = {
+                "top-left": (margin, margin + font_size),
+                "top-center": ((pw - text_width) / 2, margin + font_size),
+                "top-right": (pw - text_width - margin, margin + font_size),
+                "bottom-left": (margin, ph - margin),
+                "bottom-center": ((pw - text_width) / 2, ph - margin),
+                "bottom-right": (pw - text_width - margin, ph - margin),
+            }
+            x, y = positions.get(position, positions["bottom-right"])
+            page.insert_text((x, y), bates, fontsize=font_size, fontname="helv", color=(0, 0, 0))
+        self.is_modified = True
+    
+    # Flatten annotations
+    def flatten_annotations(self):
+        if not self.doc:
+            return
+        for page in self.doc:
+            for annot in list(page.annots()):
+                annot.set_flags(fitz.PDF_ANNOT_IS_PRINT)
+            page.clean_contents()
+        self.is_modified = True
+    
+    # Remove metadata
+    def remove_metadata(self):
+        if self.doc:
+            self.doc.set_metadata({})
+            self.is_modified = True
+    
+    # Export to Word
+    def export_to_word(self, output_path: str) -> bool:
+        if not HAS_DOCX or not self.doc:
+            return False
+        try:
+            doc = DocxDocument()
+            for i in range(len(self.doc)):
+                if i > 0:
+                    doc.add_page_break()
+                text = self.get_text(i)
+                if text.strip():
+                    doc.add_paragraph(text)
+            doc.save(output_path)
+            return True
+        except:
+            return False
+    
+    # Export to images
+    def export_to_images(self, output_dir: str, dpi: int = 150, fmt: str = "png") -> List[str]:
+        files = []
+        if not self.doc:
+            return files
+        zoom = dpi / 72
+        for i in range(len(self.doc)):
+            page = self.doc[i]
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+            path = os.path.join(output_dir, f"page_{i+1:03d}.{fmt}")
+            pix.save(path)
+            files.append(path)
+        return files
+    
+    # Export text
+    def export_text(self, output_path: str) -> bool:
+        if not self.doc:
+            return False
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                for i in range(len(self.doc)):
+                    f.write(f"--- Page {i+1} ---\n{self.get_text(i)}\n\n")
+            return True
+        except:
+            return False
+    
+    # Add stamp
+    def add_stamp(self, page_num: int, x: float, y: float, stamp: dict):
+        page = self.get_page(page_num)
+        if not page:
+            return
+        text = stamp['text']
+        font_size = 14
+        text_width = len(text) * font_size * 0.6
+        stamp_w = text_width + 20
+        stamp_h = font_size + 16
+        
+        def hex_to_rgb(h):
+            h = h.lstrip('#')
+            return tuple(int(h[i:i+2], 16)/255 for i in (0, 2, 4))
+        
+        bg = hex_to_rgb(stamp['bg'])
+        fg = hex_to_rgb(stamp['color'])
+        
+        shape = page.new_shape()
+        shape.draw_rect(fitz.Rect(x, y, x + stamp_w, y + stamp_h))
+        shape.finish(color=bg, fill=bg, width=2)
+        shape.commit()
+        
+        page.insert_text((x + 10, y + stamp_h - 8), text, fontsize=font_size, fontname="hebo", color=fg)
+        self.is_modified = True
+    
+    # Metadata
+    def get_metadata(self) -> Dict:
+        return dict(self.doc.metadata) if self.doc else {}
+    
+    def set_metadata(self, metadata: Dict):
+        if self.doc:
+            self.doc.set_metadata(metadata)
+            self.is_modified = True
     
     # Merge/Split
     def merge_pdf(self, other_path: str):
@@ -1074,7 +1284,7 @@ class PDFEditorPro(tk.Tk):
     def __init__(self):
         super().__init__()
         
-        self.title("PDF Editor Pro")
+        self.title("PDF Editor Pro v3.0")
         self.geometry("1400x900")
         self.minsize(1100, 700)
         self.configure(bg=Theme.BG_PRIMARY)
@@ -1091,11 +1301,13 @@ class PDFEditorPro(tk.Tk):
         self.thumbnails: List[PageThumbnail] = []
         self.page_image = None
         self.search_highlights = []
+        self.selected_stamp = None
         
         # Config
         self.config_data = Config.load()
         
         # Build UI
+        self._build_menu()
         self._build_ui()
         self._bind_shortcuts()
         
@@ -1103,6 +1315,109 @@ class PDFEditorPro(tk.Tk):
         
         # Show welcome or recent
         self._show_welcome()
+    
+    def _build_menu(self):
+        menubar = tk.Menu(self, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        file_menu.add_command(label="New", command=self._new_doc, accelerator="Ctrl+N")
+        file_menu.add_command(label="Open...", command=self._open_doc, accelerator="Ctrl+O")
+        file_menu.add_separator()
+        file_menu.add_command(label="Save", command=self._save_doc, accelerator="Ctrl+S")
+        file_menu.add_command(label="Save As...", command=self._save_as)
+        file_menu.add_separator()
+        file_menu.add_command(label="Close", command=self._close_tab, accelerator="Ctrl+W")
+        file_menu.add_separator()
+        file_menu.add_command(label="Properties...", command=self._show_properties)
+        file_menu.add_separator()
+        file_menu.add_command(label="Print...", command=self._print_doc, accelerator="Ctrl+P")
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close)
+        menubar.add_cascade(label="File", menu=file_menu)
+        
+        # Edit menu
+        edit_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        edit_menu.add_command(label="Find...", command=self._show_search, accelerator="Ctrl+F")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Copy Page Text", command=self._copy_page_text)
+        menubar.add_cascade(label="Edit", menu=edit_menu)
+        
+        # View menu
+        view_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        view_menu.add_command(label="Zoom In", command=self._zoom_in, accelerator="Ctrl++")
+        view_menu.add_command(label="Zoom Out", command=self._zoom_out, accelerator="Ctrl+-")
+        view_menu.add_command(label="Fit Page", command=self._zoom_fit, accelerator="Ctrl+0")
+        view_menu.add_command(label="Actual Size (100%)", command=self._zoom_100, accelerator="Ctrl+1")
+        view_menu.add_separator()
+        view_menu.add_command(label="Rotate CW", command=lambda: self._rotate(self.current_page, 90))
+        view_menu.add_command(label="Rotate CCW", command=lambda: self._rotate(self.current_page, -90))
+        menubar.add_cascade(label="View", menu=view_menu)
+        
+        # Page menu
+        page_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        page_menu.add_command(label="Insert Blank Page", command=lambda: self._insert_page(self.current_page + 1))
+        page_menu.add_command(label="Duplicate Page", command=self._duplicate_page)
+        page_menu.add_separator()
+        page_menu.add_command(label="Delete Page", command=self._delete_page, accelerator="Delete")
+        page_menu.add_command(label="Extract Page...", command=lambda: self._extract_page(self.current_page))
+        page_menu.add_separator()
+        page_menu.add_command(label="Crop Page...", command=lambda: self._set_tool(ToolMode.CROP))
+        menubar.add_cascade(label="Page", menu=page_menu)
+        
+        # Tools menu
+        tools_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        tools_menu.add_command(label="Add Text", command=lambda: self._set_tool(ToolMode.TEXT))
+        tools_menu.add_command(label="Add Sticky Note", command=lambda: self._set_tool(ToolMode.STICKY_NOTE))
+        tools_menu.add_command(label="Add Image...", command=self._add_image_dialog)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Highlight", command=lambda: self._set_tool(ToolMode.HIGHLIGHT))
+        tools_menu.add_command(label="Underline", command=lambda: self._set_tool(ToolMode.UNDERLINE))
+        tools_menu.add_command(label="Strikethrough", command=lambda: self._set_tool(ToolMode.STRIKETHROUGH))
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Rectangle", command=lambda: self._set_tool(ToolMode.RECTANGLE))
+        tools_menu.add_command(label="Circle", command=lambda: self._set_tool(ToolMode.CIRCLE))
+        tools_menu.add_command(label="Arrow", command=lambda: self._set_tool(ToolMode.ARROW))
+        tools_menu.add_command(label="Freehand", command=lambda: self._set_tool(ToolMode.DRAW))
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Add Stamp...", command=self._show_stamp_picker)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Redact Area", command=lambda: self._set_tool(ToolMode.REDACT))
+        menubar.add_cascade(label="Tools", menu=tools_menu)
+        
+        # Document menu
+        doc_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        doc_menu.add_command(label="Merge PDFs...", command=self._merge_pdfs)
+        doc_menu.add_command(label="Split Document...", command=self._split_document)
+        doc_menu.add_separator()
+        doc_menu.add_command(label="Add Watermark...", command=self._watermark_dialog)
+        doc_menu.add_command(label="Add Header/Footer...", command=self._header_footer_dialog)
+        doc_menu.add_command(label="Add Bates Numbers...", command=self._bates_dialog)
+        doc_menu.add_separator()
+        doc_menu.add_command(label="OCR - Make Searchable...", command=self._ocr_document)
+        doc_menu.add_separator()
+        doc_menu.add_command(label="Compress PDF...", command=self._compress_pdf)
+        doc_menu.add_command(label="Flatten Annotations", command=self._flatten_annotations)
+        doc_menu.add_command(label="Remove Metadata", command=self._remove_metadata)
+        doc_menu.add_separator()
+        doc_menu.add_command(label="Set Password...", command=self._set_password_dialog)
+        menubar.add_cascade(label="Document", menu=doc_menu)
+        
+        # Export menu
+        export_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        export_menu.add_command(label="Export to Word...", command=self._export_to_word)
+        export_menu.add_command(label="Export to Images...", command=self._export_to_images)
+        export_menu.add_command(label="Export Text...", command=self._export_text)
+        menubar.add_cascade(label="Export", menu=export_menu)
+        
+        # Help menu
+        help_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        help_menu.add_command(label="Keyboard Shortcuts", command=self._show_shortcuts)
+        help_menu.add_separator()
+        help_menu.add_command(label="About", command=self._show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        
+        self.config(menu=menubar)
     
     @property
     def doc(self) -> Optional[PDFDocument]:
@@ -1788,6 +2103,10 @@ class PDFEditorPro(tk.Tk):
             self._add_text_dialog(px, py)
         elif self.tool_mode == ToolMode.STICKY_NOTE:
             self._add_comment_dialog(px, py)
+        elif self.tool_mode == ToolMode.STAMP and self.selected_stamp:
+            self.doc.add_stamp(self.current_page, px, py, self.selected_stamp)
+            self._render_page()
+            self._status(f"Stamp placed")
         elif self.tool_mode == ToolMode.PAN:
             self._pan_start = (cx, cy)
     
@@ -2138,6 +2457,349 @@ class PDFEditorPro(tk.Tk):
             messagebox.showinfo("OCR Complete", f"Processed {count} pages.\nDocument is now searchable.")
         else:
             messagebox.showerror("OCR Failed", "OCR processing failed.")
+    
+    # =========================================================================
+    # WATERMARK, HEADERS, BATES
+    # =========================================================================
+    
+    def _watermark_dialog(self):
+        if not self.doc:
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Add Watermark")
+        dialog.geometry("380x280")
+        dialog.configure(bg=Theme.BG_SECONDARY)
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text="Watermark Text:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(20, 5))
+        text_entry = tk.Entry(dialog, width=30, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
+        text_entry.pack(ipady=4)
+        text_entry.insert(0, "CONFIDENTIAL")
+        
+        tk.Label(dialog, text="Font Size:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(15, 5))
+        size_var = tk.StringVar(value="48")
+        tk.Spinbox(dialog, from_=12, to=144, textvariable=size_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+        
+        tk.Label(dialog, text="Rotation (degrees):", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(15, 5))
+        angle_var = tk.StringVar(value="45")
+        tk.Spinbox(dialog, from_=-90, to=90, textvariable=angle_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+        
+        def apply():
+            self.doc.add_watermark(text_entry.get(), int(size_var.get()), angle=float(angle_var.get()))
+            self._render_page()
+            dialog.destroy()
+            self._status("Watermark added to all pages")
+        
+        tk.Button(dialog, text="Apply to All Pages", command=apply, bg=Theme.ACCENT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=20).pack(pady=25)
+    
+    def _header_footer_dialog(self):
+        if not self.doc:
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Add Header/Footer")
+        dialog.geometry("450x320")
+        dialog.configure(bg=Theme.BG_SECONDARY)
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text="Placeholders: {page}, {pages}, {date}, {filename}", bg=Theme.BG_SECONDARY, fg=Theme.FG_MUTED, font=(Theme.FONT, Theme.FONT_SMALL)).pack(pady=(15, 10))
+        
+        tk.Label(dialog, text="Header:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(10, 5))
+        header_entry = tk.Entry(dialog, width=45, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
+        header_entry.pack(ipady=4)
+        
+        tk.Label(dialog, text="Footer:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(15, 5))
+        footer_entry = tk.Entry(dialog, width=45, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
+        footer_entry.pack(ipady=4)
+        footer_entry.insert(0, "Page {page} of {pages}")
+        
+        tk.Label(dialog, text="Font Size:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(15, 5))
+        size_var = tk.StringVar(value="10")
+        tk.Spinbox(dialog, from_=6, to=24, textvariable=size_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+        
+        def apply():
+            h = header_entry.get() or None
+            f = footer_entry.get() or None
+            if h or f:
+                self.doc.add_header_footer(h, f, int(size_var.get()))
+                self._render_page()
+                self._status("Header/footer added")
+            dialog.destroy()
+        
+        tk.Button(dialog, text="Apply", command=apply, bg=Theme.ACCENT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=25).pack(pady=20)
+    
+    def _bates_dialog(self):
+        if not self.doc:
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Bates Numbering")
+        dialog.geometry("380x350")
+        dialog.configure(bg=Theme.BG_SECONDARY)
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text="Prefix:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(20, 5))
+        prefix_entry = tk.Entry(dialog, width=20, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
+        prefix_entry.pack(ipady=3)
+        prefix_entry.insert(0, "DOC-")
+        
+        tk.Label(dialog, text="Start Number:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(10, 5))
+        start_var = tk.StringVar(value="1")
+        tk.Spinbox(dialog, from_=1, to=999999, textvariable=start_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+        
+        tk.Label(dialog, text="Digits:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(10, 5))
+        digits_var = tk.StringVar(value="6")
+        tk.Spinbox(dialog, from_=3, to=10, textvariable=digits_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+        
+        tk.Label(dialog, text="Position:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(10, 5))
+        pos_var = tk.StringVar(value="bottom-right")
+        positions = ["top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"]
+        ttk.Combobox(dialog, textvariable=pos_var, values=positions, width=15).pack()
+        
+        def apply():
+            self.doc.add_bates_numbers(prefix=prefix_entry.get(), start=int(start_var.get()), digits=int(digits_var.get()), position=pos_var.get())
+            self._render_page()
+            dialog.destroy()
+            self._status("Bates numbers added")
+        
+        tk.Button(dialog, text="Apply", command=apply, bg=Theme.ACCENT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=25).pack(pady=25)
+    
+    # =========================================================================
+    # STAMPS
+    # =========================================================================
+    
+    def _show_stamp_picker(self):
+        if not self.doc:
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Select Stamp")
+        dialog.geometry("400x320")
+        dialog.configure(bg=Theme.BG_SECONDARY)
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text="Select a Stamp", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY, font=(Theme.FONT, Theme.FONT_TITLE, "bold")).pack(pady=15)
+        
+        frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+        frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        def select_stamp(stamp):
+            self.selected_stamp = stamp
+            self._set_tool(ToolMode.STAMP)
+            dialog.destroy()
+            self._status(f"Stamp selected: {stamp['name']} - Click on page to place")
+        
+        for i, stamp in enumerate(BUILTIN_STAMPS):
+            btn = tk.Button(frame, text=stamp['text'], bg=stamp['bg'], fg=stamp['color'], font=(Theme.FONT, 10, "bold"), relief=tk.FLAT, padx=10, pady=5, command=lambda s=stamp: select_stamp(s))
+            btn.grid(row=i//3, column=i%3, padx=5, pady=5, sticky='ew')
+        
+        for i in range(3):
+            frame.columnconfigure(i, weight=1)
+        
+        tk.Button(dialog, text="Cancel", command=dialog.destroy, bg=Theme.BG_HOVER, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=20).pack(pady=15)
+    
+    # =========================================================================
+    # EXPORTS
+    # =========================================================================
+    
+    def _export_to_word(self):
+        if not self.doc:
+            return
+        if not HAS_DOCX:
+            messagebox.showerror("Unavailable", "python-docx failed to install.\nTry manually: pip install python-docx\nThen restart the application.")
+            return
+        output = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word Document", "*.docx")])
+        if output:
+            if self.doc.export_to_word(output):
+                self._status("Exported to Word")
+                messagebox.showinfo("Done", "Document exported to Word format")
+            else:
+                messagebox.showerror("Error", "Export failed")
+    
+    def _export_to_images(self):
+        if not self.doc:
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Export to Images")
+        dialog.geometry("320x220")
+        dialog.configure(bg=Theme.BG_SECONDARY)
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text="DPI:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(20, 5))
+        dpi_var = tk.StringVar(value="150")
+        tk.Spinbox(dialog, from_=72, to=600, textvariable=dpi_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+        
+        tk.Label(dialog, text="Format:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(15, 5))
+        fmt_var = tk.StringVar(value="png")
+        ttk.Combobox(dialog, textvariable=fmt_var, values=["png", "jpg", "jpeg"], width=10).pack()
+        
+        def export():
+            output_dir = filedialog.askdirectory(title="Select output folder")
+            if output_dir:
+                files = self.doc.export_to_images(output_dir, int(dpi_var.get()), fmt_var.get())
+                dialog.destroy()
+                messagebox.showinfo("Done", f"Exported {len(files)} images")
+        
+        tk.Button(dialog, text="Export", command=export, bg=Theme.ACCENT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=25).pack(pady=25)
+    
+    def _export_text(self):
+        if not self.doc:
+            return
+        output = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text File", "*.txt")])
+        if output:
+            if self.doc.export_text(output):
+                self._status("Text exported")
+                messagebox.showinfo("Done", "Text extracted to file")
+            else:
+                messagebox.showerror("Error", "Export failed")
+    
+    # =========================================================================
+    # DOCUMENT OPERATIONS
+    # =========================================================================
+    
+    def _split_document(self):
+        if not self.doc:
+            return
+        output_dir = filedialog.askdirectory(title="Select output folder for split pages")
+        if output_dir:
+            files = self.doc.split_pages(output_dir)
+            messagebox.showinfo("Done", f"Split into {len(files)} separate PDF files")
+    
+    def _flatten_annotations(self):
+        if self.doc:
+            self.doc.flatten_annotations()
+            self._render_page()
+            self._status("Annotations flattened into page content")
+    
+    def _remove_metadata(self):
+        if self.doc:
+            if messagebox.askyesno("Remove Metadata", "Remove all document metadata (author, title, etc.)?"):
+                self.doc.remove_metadata()
+                self._status("Metadata removed")
+    
+    def _set_password_dialog(self):
+        if not self.doc:
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Set Password Protection")
+        dialog.geometry("350x200")
+        dialog.configure(bg=Theme.BG_SECONDARY)
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text="Password:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(20, 5))
+        pass_entry = tk.Entry(dialog, show="*", width=25, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
+        pass_entry.pack(ipady=4)
+        
+        tk.Label(dialog, text="Confirm:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(10, 5))
+        confirm_entry = tk.Entry(dialog, show="*", width=25, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
+        confirm_entry.pack(ipady=4)
+        
+        def apply():
+            if pass_entry.get() != confirm_entry.get():
+                messagebox.showerror("Error", "Passwords don't match")
+                return
+            output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
+            if output:
+                try:
+                    perm = fitz.PDF_PERM_PRINT | fitz.PDF_PERM_COPY
+                    self.doc.doc.save(output, encryption=fitz.PDF_ENCRYPT_AES_256, user_pw=pass_entry.get(), permissions=perm)
+                    self._status("Password-protected PDF saved")
+                    dialog.destroy()
+                except Exception as e:
+                    messagebox.showerror("Error", str(e))
+        
+        tk.Button(dialog, text="Save Protected PDF", command=apply, bg=Theme.ACCENT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=20).pack(pady=20)
+    
+    def _show_properties(self):
+        if not self.doc:
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Document Properties")
+        dialog.geometry("420x380")
+        dialog.configure(bg=Theme.BG_SECONDARY)
+        dialog.transient(self)
+        
+        meta = self.doc.get_metadata()
+        
+        fields = [("Title", meta.get('title', '')), ("Author", meta.get('author', '')), ("Subject", meta.get('subject', '')), ("Keywords", meta.get('keywords', ''))]
+        entries = {}
+        
+        for label, value in fields:
+            frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+            frame.pack(fill=tk.X, padx=20, pady=5)
+            tk.Label(frame, text=label + ":", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY, width=12, anchor='w').pack(side=tk.LEFT)
+            entry = tk.Entry(frame, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, width=35)
+            entry.pack(side=tk.LEFT, ipady=3)
+            entry.insert(0, value or '')
+            entries[label.lower()] = entry
+        
+        tk.Label(dialog, text=f"\nFile: {self.doc.filename}", bg=Theme.BG_SECONDARY, fg=Theme.FG_SECONDARY).pack()
+        tk.Label(dialog, text=f"Pages: {self.doc.page_count}", bg=Theme.BG_SECONDARY, fg=Theme.FG_SECONDARY).pack()
+        if self.doc.filepath:
+            size = os.path.getsize(self.doc.filepath) // 1024
+            tk.Label(dialog, text=f"Size: {size} KB", bg=Theme.BG_SECONDARY, fg=Theme.FG_SECONDARY).pack()
+        
+        def save():
+            new_meta = {k: e.get() for k, e in entries.items()}
+            self.doc.set_metadata(new_meta)
+            dialog.destroy()
+            self._status("Properties updated")
+        
+        tk.Button(dialog, text="Save", command=save, bg=Theme.ACCENT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=25).pack(pady=20)
+    
+    def _print_doc(self):
+        if not self.doc or not self.doc.filepath:
+            messagebox.showinfo("Print", "Save the document first, then use your system PDF viewer to print.")
+            return
+        try:
+            if platform.system() == "Windows":
+                os.startfile(self.doc.filepath, "print")
+            else:
+                subprocess.run(["lp", self.doc.filepath])
+            self._status("Sent to printer")
+        except Exception as e:
+            messagebox.showerror("Print Error", str(e))
+    
+    def _duplicate_page(self):
+        if self.doc:
+            self.doc.duplicate_page(self.current_page)
+            self._refresh_all()
+            self._status("Page duplicated")
+    
+    def _show_shortcuts(self):
+        shortcuts = """
+Keyboard Shortcuts:
+
+FILE
+  Ctrl+N        New document
+  Ctrl+O        Open file
+  Ctrl+S        Save
+  Ctrl+W        Close tab
+
+NAVIGATION
+  Home          First page
+  End           Last page
+  Page Up       Previous page
+  Page Down     Next page
+
+VIEW
+  Ctrl++        Zoom in
+  Ctrl+-        Zoom out
+  Ctrl+0        Fit page
+  Ctrl+1        100% zoom
+
+TOOLS
+  Escape        Select tool
+  Delete        Delete page
+  Ctrl+F        Find text
+"""
+        messagebox.showinfo("Keyboard Shortcuts", shortcuts)
+    
+    def _show_about(self):
+        messagebox.showinfo("About PDF Editor Pro", "PDF Editor Pro v3.0\n\nA comprehensive PDF editing suite.\n\nFeatures:\n• Multi-document tabs\n• Search & navigation\n• Annotations & comments\n• Stamps library\n• Watermarks & headers\n• Bates numbering\n• OCR text recognition\n• Export to Word/images\n• Merge, split, compress\n• Password protection\n\n© 2025")
     
     # =========================================================================
     # CLEANUP
