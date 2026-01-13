@@ -1,32 +1,23 @@
 #!/usr/bin/env python3
 """
-PDF Editor Pro v3.0 - Professional PDF Editing Suite
-A comprehensive Adobe Acrobat Pro alternative
+PDF Editor Pro v4.0 - Professional PDF Editing Suite
+A comprehensive Adobe Acrobat Pro alternative with modern UI
 
-NEW IN v3.0:
-- Full menu bar with all operations
-- Stamps library (Approved, Draft, Confidential, etc.)
-- Watermarks (text-based)
-- Headers & Footers with page numbers
-- Bates numbering for legal documents
-- Export to Word (.docx)
-- Export to Images (PNG/JPG)
-- Flatten annotations
-- Password protection
-- Document properties editor
-- Split document into separate files
-
-EXISTING FEATURES:
+Features:
+- Professional dark theme UI
+- Ribbon-style toolbar with tool groups
 - Multi-tab document interface
-- Search within documents (Ctrl+F)
+- Search within documents
 - Bookmarks/Outline navigation
 - Comments & Sticky Notes
-- Form filling
-- Compress/Optimize PDF
-- Crop pages
-- Recent files
-- Full annotation toolkit
+- Stamps library
+- Watermarks, Headers & Footers
+- Bates numbering
+- Export to Word/Images
 - OCR with invisible text layer
+- Form filling
+- Merge, Split, Compress
+- Password protection
 
 Auto-installs all dependencies on first run.
 """
@@ -36,11 +27,11 @@ import subprocess
 import os
 import platform
 import urllib.request
-import zipfile
 import shutil
 import tempfile
 import json
 from pathlib import Path
+from datetime import datetime
 
 # ============================================================================
 # AUTO-INSTALLER
@@ -55,12 +46,11 @@ TESSERACT_URL = f"https://github.com/tesseract-ocr/tesseract/releases/download/{
 
 def get_tesseract_path():
     if platform.system() == "Windows":
-        paths = [
+        for path in [
             os.path.join(TESSERACT_DIR, "tesseract.exe"),
             r"C:\Program Files\Tesseract-OCR\tesseract.exe",
             r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        ]
-        for path in paths:
+        ]:
             if os.path.exists(path):
                 return path
     return None
@@ -96,11 +86,8 @@ def install_tesseract_windows():
                 print("    ✓ Tesseract installed")
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 return exe
-            for p in [r"C:\Program Files\Tesseract-OCR\tesseract.exe"]:
-                if os.path.exists(p):
-                    return p
-    except Exception as e:
-        print(f"    Error: {e}")
+    except:
+        pass
     shutil.rmtree(temp_dir, ignore_errors=True)
     return None
 
@@ -117,6 +104,13 @@ def pip_install(pkg):
             pass
     return False
 
+def _try_import(name):
+    try:
+        __import__(name)
+        return True
+    except:
+        return False
+
 def check_and_install_dependencies():
     required = {'PIL': 'Pillow', 'fitz': 'PyMuPDF'}
     optional = {'pytesseract': 'pytesseract', 'docx': 'python-docx'}
@@ -126,7 +120,7 @@ def check_and_install_dependencies():
     
     if missing_req or missing_opt or tesseract_needed:
         print("\n╔══════════════════════════════════════════════════════════╗")
-        print("║         PDF Editor Pro v3.0 - First Run Setup            ║")
+        print("║         PDF Editor Pro v4.0 - First Run Setup            ║")
         print("╚══════════════════════════════════════════════════════════╝\n")
         for pkg in missing_req + missing_opt:
             print(f"  Installing {pkg}...", end=" ", flush=True)
@@ -143,13 +137,6 @@ def check_and_install_dependencies():
     if (path := get_tesseract_path()):
         os.environ["TESSERACT_CMD"] = path
 
-def _try_import(name):
-    try:
-        __import__(name)
-        return True
-    except:
-        return False
-
 check_and_install_dependencies()
 
 # ============================================================================
@@ -157,80 +144,115 @@ check_and_install_dependencies()
 # ============================================================================
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
-from PIL import Image, ImageTk
+from tkinter import ttk, filedialog, messagebox, colorchooser
+from PIL import Image, ImageTk, ImageDraw
 import fitz
 import io
 import threading
-import re
-from datetime import datetime
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass
 from typing import Optional, List, Tuple, Dict, Callable, Any
 from enum import Enum, auto
 from collections import deque
-import copy
-import math
 
-# Try importing python-docx for Word export
 try:
     from docx import Document as DocxDocument
-    from docx.shared import Inches, Pt
     HAS_DOCX = True
 except ImportError:
     HAS_DOCX = False
 
+# ============================================================================
+# THEME - Professional Dark UI
+# ============================================================================
+
+class Theme:
+    # Backgrounds - Layered depth
+    BG_DARK = "#0d0d0d"
+    BG_PRIMARY = "#161616"
+    BG_SECONDARY = "#1e1e1e"
+    BG_TERTIARY = "#262626"
+    BG_ELEVATED = "#2d2d2d"
+    BG_HOVER = "#363636"
+    BG_ACTIVE = "#404040"
+    BG_INPUT = "#1a1a1a"
+    BG_CANVAS = "#525252"
+    
+    # Foregrounds
+    FG_PRIMARY = "#f5f5f5"
+    FG_SECONDARY = "#a0a0a0"
+    FG_MUTED = "#6b6b6b"
+    FG_DISABLED = "#4a4a4a"
+    
+    # Accents
+    ACCENT = "#2563eb"
+    ACCENT_LIGHT = "#3b82f6"
+    ACCENT_DARK = "#1d4ed8"
+    ACCENT_MUTED = "#1e3a5f"
+    
+    # Status colors
+    SUCCESS = "#10b981"
+    WARNING = "#f59e0b"
+    DANGER = "#ef4444"
+    INFO = "#06b6d4"
+    
+    # Borders
+    BORDER_DARK = "#1a1a1a"
+    BORDER_LIGHT = "#333333"
+    BORDER_FOCUS = "#2563eb"
+    
+    # Special
+    SELECTION = "#2563eb"
+    HIGHLIGHT = "#fbbf24"
+    SHADOW = "#000000"
+    
+    # Typography
+    FONT_FAMILY = "Segoe UI"
+    FONT_MONO = "Consolas"
+    FONT_SIZE_XS = 9
+    FONT_SIZE_SM = 10
+    FONT_SIZE_MD = 11
+    FONT_SIZE_LG = 12
+    FONT_SIZE_XL = 14
+    FONT_SIZE_XXL = 18
+    
+    # Spacing
+    PAD_XS = 2
+    PAD_SM = 4
+    PAD_MD = 8
+    PAD_LG = 12
+    PAD_XL = 16
+    PAD_XXL = 24
+    
+    # Sizing
+    TOOLBAR_HEIGHT = 90
+    SIDEBAR_WIDTH = 200
+    STATUSBAR_HEIGHT = 28
+    TAB_HEIGHT = 36
+    BUTTON_HEIGHT = 32
+    ICON_SIZE = 20
+
 # Predefined stamps
 BUILTIN_STAMPS = [
-    {"name": "Approved", "text": "APPROVED", "color": "#ffffff", "bg": "#22c55e"},
-    {"name": "Rejected", "text": "REJECTED", "color": "#ffffff", "bg": "#ef4444"},
-    {"name": "Draft", "text": "DRAFT", "color": "#000000", "bg": "#fbbf24"},
-    {"name": "Final", "text": "FINAL", "color": "#ffffff", "bg": "#3b82f6"},
-    {"name": "Confidential", "text": "CONFIDENTIAL", "color": "#ffffff", "bg": "#dc2626"},
-    {"name": "For Review", "text": "FOR REVIEW", "color": "#000000", "bg": "#f97316"},
-    {"name": "Void", "text": "VOID", "color": "#ffffff", "bg": "#6b7280"},
-    {"name": "Copy", "text": "COPY", "color": "#000000", "bg": "#a3e635"},
+    {"name": "Approved", "text": "APPROVED", "fg": "#ffffff", "bg": "#10b981"},
+    {"name": "Rejected", "text": "REJECTED", "fg": "#ffffff", "bg": "#ef4444"},
+    {"name": "Draft", "text": "DRAFT", "fg": "#000000", "bg": "#fbbf24"},
+    {"name": "Final", "text": "FINAL", "fg": "#ffffff", "bg": "#2563eb"},
+    {"name": "Confidential", "text": "CONFIDENTIAL", "fg": "#ffffff", "bg": "#dc2626"},
+    {"name": "For Review", "text": "FOR REVIEW", "fg": "#000000", "bg": "#fb923c"},
+    {"name": "Void", "text": "VOID", "fg": "#ffffff", "bg": "#6b7280"},
+    {"name": "Copy", "text": "COPY", "fg": "#000000", "bg": "#a3e635"},
 ]
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
-class Theme:
-    """Modern dark theme"""
-    BG_PRIMARY = "#0f0f0f"
-    BG_SECONDARY = "#1a1a1a"
-    BG_TERTIARY = "#252525"
-    BG_HOVER = "#333333"
-    BG_SELECTED = "#0066cc"
-    BG_INPUT = "#2a2a2a"
-    
-    FG_PRIMARY = "#ffffff"
-    FG_SECONDARY = "#aaaaaa"
-    FG_MUTED = "#666666"
-    
-    ACCENT = "#0078d4"
-    ACCENT_HOVER = "#1a86d9"
-    SUCCESS = "#22c55e"
-    WARNING = "#f59e0b"
-    DANGER = "#ef4444"
-    
-    BORDER = "#333333"
-    SCROLLBAR = "#444444"
-    
-    FONT = "Segoe UI"
-    FONT_SIZE = 10
-    FONT_SMALL = 9
-    FONT_LARGE = 11
-    FONT_TITLE = 13
-
 class Config:
-    """Application configuration"""
-    MAX_RECENT_FILES = 10
-    MAX_UNDO_STEPS = 50
-    THUMBNAIL_SIZE = (120, 160)
+    MAX_RECENT_FILES = 15
+    MAX_UNDO_STEPS = 100
     DEFAULT_ZOOM = 1.0
     MIN_ZOOM = 0.1
-    MAX_ZOOM = 5.0
+    MAX_ZOOM = 10.0
     
     @staticmethod
     def get_config_path():
@@ -243,7 +265,7 @@ class Config:
             with open(Config.get_config_path(), 'r') as f:
                 return json.load(f)
         except:
-            return {"recent_files": [], "window_geometry": None}
+            return {"recent_files": [], "window_geometry": "1500x900"}
     
     @staticmethod
     def save(data):
@@ -254,7 +276,7 @@ class Config:
             pass
 
 # ============================================================================
-# DATA CLASSES
+# ENUMS & DATA CLASSES
 # ============================================================================
 
 class ToolMode(Enum):
@@ -266,16 +288,16 @@ class ToolMode(Enum):
     UNDERLINE = auto()
     STRIKETHROUGH = auto()
     DRAW = auto()
+    ERASER = auto()
     RECTANGLE = auto()
     CIRCLE = auto()
     LINE = auto()
     ARROW = auto()
     IMAGE = auto()
-    REDACT = auto()
     STAMP = auto()
-    LINK = auto()
+    REDACT = auto()
     CROP = auto()
-    MEASURE = auto()
+    LINK = auto()
 
 @dataclass
 class SearchResult:
@@ -292,46 +314,411 @@ class Comment:
     content: str
     author: str = "User"
     date: str = ""
-    color: str = "#ffeb3b"
-    
-    def __post_init__(self):
-        if not self.date:
-            self.date = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-@dataclass
-class UndoAction:
-    action_type: str
-    page: int
-    data: Any
+    color: str = "#fbbf24"
 
 # ============================================================================
-# DOCUMENT MANAGER
+# STYLED WIDGETS
+# ============================================================================
+
+class ModernButton(tk.Canvas):
+    """Modern flat button with hover effects"""
+    def __init__(self, parent, text="", icon="", command=None, width=None, 
+                 style="default", tooltip="", **kw):
+        self.btn_width = width or (36 if not text else max(80, len(text) * 8 + 24))
+        self.btn_height = 32
+        super().__init__(parent, width=self.btn_width, height=self.btn_height,
+                        bg=Theme.BG_SECONDARY, highlightthickness=0, **kw)
+        
+        self.text = text
+        self.icon = icon
+        self.command = command
+        self.style = style
+        self.tooltip_text = tooltip
+        self.state = "normal"  # normal, hover, pressed, disabled
+        self._tip_window = None
+        
+        self._draw()
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+    
+    def _get_colors(self):
+        if self.state == "disabled":
+            return Theme.BG_TERTIARY, Theme.FG_DISABLED
+        
+        if self.style == "primary":
+            if self.state == "pressed":
+                return Theme.ACCENT_DARK, Theme.FG_PRIMARY
+            elif self.state == "hover":
+                return Theme.ACCENT_LIGHT, Theme.FG_PRIMARY
+            return Theme.ACCENT, Theme.FG_PRIMARY
+        elif self.style == "danger":
+            if self.state == "pressed":
+                return "#b91c1c", Theme.FG_PRIMARY
+            elif self.state == "hover":
+                return "#f87171", Theme.FG_PRIMARY
+            return Theme.DANGER, Theme.FG_PRIMARY
+        else:  # default
+            if self.state == "pressed":
+                return Theme.BG_ACTIVE, Theme.FG_PRIMARY
+            elif self.state == "hover":
+                return Theme.BG_HOVER, Theme.FG_PRIMARY
+            return Theme.BG_TERTIARY, Theme.FG_SECONDARY
+    
+    def _draw(self):
+        self.delete("all")
+        bg, fg = self._get_colors()
+        
+        # Background with rounded corners effect
+        self.create_rectangle(1, 1, self.btn_width-1, self.btn_height-1,
+                             fill=bg, outline=Theme.BORDER_LIGHT if self.style == "default" else bg)
+        
+        # Content
+        if self.icon and self.text:
+            self.create_text(18, self.btn_height//2, text=self.icon, fill=fg,
+                           font=(Theme.FONT_FAMILY, 12))
+            self.create_text(36, self.btn_height//2, text=self.text, fill=fg,
+                           font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM), anchor="w")
+        elif self.icon:
+            self.create_text(self.btn_width//2, self.btn_height//2, text=self.icon,
+                           fill=fg, font=(Theme.FONT_FAMILY, 14))
+        else:
+            self.create_text(self.btn_width//2, self.btn_height//2, text=self.text,
+                           fill=fg, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
+    
+    def _on_enter(self, e):
+        if self.state != "disabled":
+            self.state = "hover"
+            self._draw()
+            self._show_tooltip()
+    
+    def _on_leave(self, e):
+        if self.state != "disabled":
+            self.state = "normal"
+            self._draw()
+            self._hide_tooltip()
+    
+    def _on_press(self, e):
+        if self.state != "disabled":
+            self.state = "pressed"
+            self._draw()
+    
+    def _on_release(self, e):
+        if self.state != "disabled":
+            self.state = "hover"
+            self._draw()
+            if self.command and 0 <= e.x <= self.btn_width and 0 <= e.y <= self.btn_height:
+                self.command()
+    
+    def _show_tooltip(self):
+        if not self.tooltip_text:
+            return
+        x = self.winfo_rootx() + self.btn_width // 2
+        y = self.winfo_rooty() + self.btn_height + 5
+        
+        self._tip_window = tk.Toplevel(self)
+        self._tip_window.wm_overrideredirect(True)
+        self._tip_window.wm_geometry(f"+{x}+{y}")
+        
+        frame = tk.Frame(self._tip_window, bg=Theme.BG_ELEVATED, padx=8, pady=4)
+        frame.pack()
+        tk.Label(frame, text=self.tooltip_text, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY,
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_XS)).pack()
+    
+    def _hide_tooltip(self):
+        if self._tip_window:
+            self._tip_window.destroy()
+            self._tip_window = None
+    
+    def set_state(self, state):
+        self.state = state
+        self._draw()
+
+class ToolbarButton(tk.Canvas):
+    """Toolbar button with icon and optional label"""
+    def __init__(self, parent, icon="", label="", command=None, toggle=False, 
+                 tooltip="", size="normal", **kw):
+        self.size = 48 if size == "normal" else 36
+        self.show_label = size == "normal" and label
+        height = 56 if self.show_label else self.size
+        
+        super().__init__(parent, width=self.size, height=height,
+                        bg=Theme.BG_SECONDARY, highlightthickness=0, **kw)
+        
+        self.icon = icon
+        self.label = label
+        self.command = command
+        self.toggle = toggle
+        self.tooltip_text = tooltip
+        self.active = False
+        self.hover = False
+        self._tip = None
+        
+        self._draw()
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_click)
+    
+    def _draw(self):
+        self.delete("all")
+        
+        # Background
+        if self.active:
+            self.create_rectangle(2, 2, self.size-2, self.size-2,
+                                 fill=Theme.ACCENT_MUTED, outline=Theme.ACCENT)
+        elif self.hover:
+            self.create_rectangle(2, 2, self.size-2, self.size-2,
+                                 fill=Theme.BG_HOVER, outline="")
+        
+        # Icon
+        icon_y = 20 if self.show_label else self.size // 2
+        fg = Theme.ACCENT_LIGHT if self.active else (Theme.FG_PRIMARY if self.hover else Theme.FG_SECONDARY)
+        self.create_text(self.size//2, icon_y, text=self.icon, fill=fg,
+                        font=(Theme.FONT_FAMILY, 16))
+        
+        # Label
+        if self.show_label:
+            self.create_text(self.size//2, 42, text=self.label, fill=Theme.FG_MUTED,
+                           font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_XS))
+    
+    def _on_enter(self, e):
+        self.hover = True
+        self._draw()
+        if self.tooltip_text and not self.show_label:
+            self._tip = tk.Toplevel(self)
+            self._tip.wm_overrideredirect(True)
+            self._tip.wm_geometry(f"+{self.winfo_rootx()}+{self.winfo_rooty()+self.size+5}")
+            frame = tk.Frame(self._tip, bg=Theme.BG_ELEVATED, padx=6, pady=3)
+            frame.pack()
+            tk.Label(frame, text=self.tooltip_text, bg=Theme.BG_ELEVATED,
+                    fg=Theme.FG_PRIMARY, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_XS)).pack()
+    
+    def _on_leave(self, e):
+        self.hover = False
+        self._draw()
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+    
+    def _on_click(self, e):
+        if self.toggle:
+            self.active = not self.active
+        self._draw()
+        if self.command:
+            self.command()
+    
+    def set_active(self, active):
+        self.active = active
+        self._draw()
+
+class ToolbarSeparator(tk.Frame):
+    def __init__(self, parent, **kw):
+        super().__init__(parent, width=1, height=40, bg=Theme.BORDER_LIGHT, **kw)
+
+class ToolbarGroup(tk.Frame):
+    """Group of toolbar buttons with label"""
+    def __init__(self, parent, label="", **kw):
+        super().__init__(parent, bg=Theme.BG_SECONDARY, **kw)
+        
+        self.buttons_frame = tk.Frame(self, bg=Theme.BG_SECONDARY)
+        self.buttons_frame.pack(pady=(4, 2))
+        
+        if label:
+            tk.Label(self, text=label, bg=Theme.BG_SECONDARY, fg=Theme.FG_MUTED,
+                    font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_XS)).pack()
+    
+    def add_button(self, **kw):
+        btn = ToolbarButton(self.buttons_frame, **kw)
+        btn.pack(side=tk.LEFT, padx=1)
+        return btn
+
+class ModernEntry(tk.Entry):
+    """Styled entry widget"""
+    def __init__(self, parent, placeholder="", **kw):
+        super().__init__(parent, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY,
+                        insertbackground=Theme.FG_PRIMARY, relief=tk.FLAT,
+                        font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM),
+                        highlightthickness=1, highlightcolor=Theme.BORDER_FOCUS,
+                        highlightbackground=Theme.BORDER_LIGHT, **kw)
+        
+        self.placeholder = placeholder
+        self._has_placeholder = False
+        
+        if placeholder:
+            self._show_placeholder()
+            self.bind("<FocusIn>", self._on_focus_in)
+            self.bind("<FocusOut>", self._on_focus_out)
+    
+    def _show_placeholder(self):
+        if not self.get():
+            self._has_placeholder = True
+            self.insert(0, self.placeholder)
+            self.configure(fg=Theme.FG_MUTED)
+    
+    def _on_focus_in(self, e):
+        if self._has_placeholder:
+            self.delete(0, tk.END)
+            self.configure(fg=Theme.FG_PRIMARY)
+            self._has_placeholder = False
+    
+    def _on_focus_out(self, e):
+        if not self.get():
+            self._show_placeholder()
+    
+    def get_value(self):
+        if self._has_placeholder:
+            return ""
+        return self.get()
+
+class TabButton(tk.Canvas):
+    """Document tab button"""
+    def __init__(self, parent, title="", doc_id="", on_select=None, on_close=None, **kw):
+        super().__init__(parent, width=180, height=Theme.TAB_HEIGHT,
+                        bg=Theme.BG_PRIMARY, highlightthickness=0, **kw)
+        
+        self.title = title
+        self.doc_id = doc_id
+        self.on_select = on_select
+        self.on_close = on_close
+        self.active = False
+        self.hover = False
+        self.close_hover = False
+        
+        self._draw()
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Motion>", self._on_motion)
+    
+    def _draw(self):
+        self.delete("all")
+        
+        # Background
+        bg = Theme.BG_TERTIARY if self.active else (Theme.BG_SECONDARY if self.hover else Theme.BG_PRIMARY)
+        self.create_rectangle(0, 0, 180, Theme.TAB_HEIGHT, fill=bg, outline="")
+        
+        # Active indicator
+        if self.active:
+            self.create_rectangle(0, Theme.TAB_HEIGHT - 2, 180, Theme.TAB_HEIGHT,
+                                 fill=Theme.ACCENT, outline="")
+        
+        # Icon
+        self.create_text(16, Theme.TAB_HEIGHT//2, text="📄", font=(Theme.FONT_FAMILY, 10))
+        
+        # Title
+        display_title = self.title[:18] + "..." if len(self.title) > 18 else self.title
+        self.create_text(30, Theme.TAB_HEIGHT//2, text=display_title,
+                        fill=Theme.FG_PRIMARY if self.active else Theme.FG_SECONDARY,
+                        font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM), anchor="w")
+        
+        # Close button
+        close_bg = Theme.BG_HOVER if self.close_hover else ""
+        if close_bg:
+            self.create_oval(152, 8, 172, 28, fill=close_bg, outline="")
+        self.create_text(162, Theme.TAB_HEIGHT//2, text="×",
+                        fill=Theme.FG_PRIMARY if self.close_hover else Theme.FG_MUTED,
+                        font=(Theme.FONT_FAMILY, 14))
+    
+    def _on_enter(self, e):
+        self.hover = True
+        self._draw()
+    
+    def _on_leave(self, e):
+        self.hover = False
+        self.close_hover = False
+        self._draw()
+    
+    def _on_motion(self, e):
+        in_close = 152 <= e.x <= 172 and 8 <= e.y <= 28
+        if in_close != self.close_hover:
+            self.close_hover = in_close
+            self._draw()
+    
+    def _on_click(self, e):
+        if 152 <= e.x <= 172 and 8 <= e.y <= 28:
+            if self.on_close:
+                self.on_close(self.doc_id)
+        else:
+            if self.on_select:
+                self.on_select(self.doc_id)
+    
+    def set_active(self, active):
+        self.active = active
+        self._draw()
+    
+    def set_title(self, title):
+        self.title = title
+        self._draw()
+
+class SidebarTab(tk.Canvas):
+    """Sidebar navigation tab"""
+    def __init__(self, parent, icon="", label="", command=None, **kw):
+        super().__init__(parent, width=Theme.SIDEBAR_WIDTH, height=40,
+                        bg=Theme.BG_SECONDARY, highlightthickness=0, **kw)
+        
+        self.icon = icon
+        self.label = label
+        self.command = command
+        self.active = False
+        self.hover = False
+        
+        self._draw()
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<Button-1>", self._on_click)
+    
+    def _draw(self):
+        self.delete("all")
+        
+        if self.active:
+            self.create_rectangle(0, 0, 3, 40, fill=Theme.ACCENT, outline="")
+            self.create_rectangle(3, 0, Theme.SIDEBAR_WIDTH, 40, fill=Theme.BG_TERTIARY, outline="")
+            fg = Theme.FG_PRIMARY
+        elif self.hover:
+            self.create_rectangle(0, 0, Theme.SIDEBAR_WIDTH, 40, fill=Theme.BG_HOVER, outline="")
+            fg = Theme.FG_PRIMARY
+        else:
+            fg = Theme.FG_SECONDARY
+        
+        self.create_text(24, 20, text=self.icon, fill=fg, font=(Theme.FONT_FAMILY, 14))
+        self.create_text(48, 20, text=self.label, fill=fg,
+                        font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM), anchor="w")
+    
+    def _set_hover(self, h):
+        self.hover = h
+        self._draw()
+    
+    def _on_click(self, e):
+        if self.command:
+            self.command()
+    
+    def set_active(self, active):
+        self.active = active
+        self._draw()
+
+# ============================================================================
+# PDF DOCUMENT CLASS
 # ============================================================================
 
 class PDFDocument:
-    """Manages a single PDF document with undo/redo support"""
-    
     def __init__(self):
-        self.doc: Optional[fitz.Document] = None
-        self.filepath: Optional[str] = None
+        self.doc = None
+        self.filepath = None
         self.is_modified = False
-        self.comments: List[Comment] = []
-        self.undo_stack: deque = deque(maxlen=Config.MAX_UNDO_STEPS)
-        self.redo_stack: deque = deque(maxlen=Config.MAX_UNDO_STEPS)
+        self.comments = []
         self._comment_counter = 0
     
-    def open(self, filepath: str) -> bool:
+    def open(self, filepath):
         try:
             self.doc = fitz.open(filepath)
             self.filepath = filepath
             self.is_modified = False
             self.comments = []
-            self.undo_stack.clear()
-            self.redo_stack.clear()
             self._load_comments()
             return True
         except Exception as e:
-            print(f"Error opening PDF: {e}")
+            print(f"Open error: {e}")
             return False
     
     def create_new(self, width=612, height=792):
@@ -339,9 +726,8 @@ class PDFDocument:
         self.doc.new_page(width=width, height=height)
         self.filepath = None
         self.is_modified = True
-        self.comments = []
     
-    def save(self, filepath: str = None) -> bool:
+    def save(self, filepath=None):
         if not self.doc:
             return False
         path = filepath or self.filepath
@@ -349,15 +735,14 @@ class PDFDocument:
             return False
         try:
             self._save_comments()
-            if path == self.filepath and self.filepath:
+            if path == self.filepath:
                 self.doc.saveIncr()
             else:
                 self.doc.save(path, garbage=4, deflate=True)
             self.filepath = path
             self.is_modified = False
             return True
-        except Exception as e:
-            print(f"Error saving: {e}")
+        except:
             return False
     
     def close(self):
@@ -366,21 +751,19 @@ class PDFDocument:
         self.__init__()
     
     @property
-    def page_count(self) -> int:
+    def page_count(self):
         return len(self.doc) if self.doc else 0
     
     @property
-    def filename(self) -> str:
-        if self.filepath:
-            return os.path.basename(self.filepath)
-        return "Untitled"
+    def filename(self):
+        return os.path.basename(self.filepath) if self.filepath else "Untitled"
     
-    def get_page(self, num: int):
+    def get_page(self, num):
         if self.doc and 0 <= num < len(self.doc):
             return self.doc[num]
         return None
     
-    def render_page(self, page_num: int, zoom: float = 1.0) -> Optional[Image.Image]:
+    def render_page(self, page_num, zoom=1.0):
         page = self.get_page(page_num)
         if not page:
             return None
@@ -388,89 +771,63 @@ class PDFDocument:
         pix = page.get_pixmap(matrix=mat, alpha=False)
         return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     
-    def get_page_size(self, page_num: int) -> Tuple[float, float]:
+    def get_page_size(self, page_num):
         page = self.get_page(page_num)
         return (page.rect.width, page.rect.height) if page else (612, 792)
     
-    # Undo/Redo
-    def push_undo(self, action_type: str, page: int, data: Any):
-        self.undo_stack.append(UndoAction(action_type, page, copy.deepcopy(data)))
-        self.redo_stack.clear()
-        self.is_modified = True
-    
-    def can_undo(self) -> bool:
-        return len(self.undo_stack) > 0
-    
-    def can_redo(self) -> bool:
-        return len(self.redo_stack) > 0
-    
-    # Text operations
-    def get_text(self, page_num: int) -> str:
+    def get_text(self, page_num):
         page = self.get_page(page_num)
         return page.get_text() if page else ""
     
-    def search_text(self, query: str, case_sensitive: bool = False) -> List[SearchResult]:
+    def search_text(self, query, case_sensitive=False):
         results = []
         if not self.doc or not query:
             return results
-        flags = 0 if case_sensitive else fitz.TEXT_PRESERVE_WHITESPACE
         for i in range(len(self.doc)):
-            page = self.doc[i]
-            rects = page.search_for(query)
-            for rect in rects:
+            for rect in self.doc[i].search_for(query):
                 results.append(SearchResult(i, tuple(rect), query))
         return results
     
-    # Page operations
-    def delete_page(self, page_num: int) -> bool:
+    def delete_page(self, page_num):
         if self.doc and 0 <= page_num < len(self.doc) and len(self.doc) > 1:
             self.doc.delete_page(page_num)
             self.is_modified = True
             return True
         return False
     
-    def insert_page(self, index: int = -1, width: float = 612, height: float = 792):
+    def insert_page(self, index=-1, width=612, height=792):
         if self.doc:
             if index < 0:
                 index = len(self.doc)
             self.doc.new_page(pno=index, width=width, height=height)
             self.is_modified = True
     
-    def duplicate_page(self, page_num: int):
+    def duplicate_page(self, page_num):
         if self.doc and 0 <= page_num < len(self.doc):
             self.doc.fullcopy_page(page_num, page_num + 1)
             self.is_modified = True
     
-    def rotate_page(self, page_num: int, angle: int = 90):
+    def rotate_page(self, page_num, angle=90):
         page = self.get_page(page_num)
         if page:
             page.set_rotation((page.rotation + angle) % 360)
             self.is_modified = True
     
-    def move_page(self, from_idx: int, to_idx: int):
-        if self.doc and 0 <= from_idx < len(self.doc) and 0 <= to_idx < len(self.doc):
-            self.doc.move_page(from_idx, to_idx)
-            self.is_modified = True
-    
-    def crop_page(self, page_num: int, rect: Tuple[float, float, float, float]):
+    def crop_page(self, page_num, rect):
         page = self.get_page(page_num)
         if page:
             page.set_cropbox(fitz.Rect(rect))
             self.is_modified = True
     
     # Annotations
-    def add_text(self, page_num: int, text: str, x: float, y: float,
-                 font_size: int = 12, color: tuple = (0, 0, 0)):
+    def add_text(self, page_num, text, x, y, font_size=12, color=(0, 0, 0)):
         page = self.get_page(page_num)
-        if page:
-            fitz_color = tuple(c/255 for c in color)
-            writer = fitz.TextWriter(page.rect)
-            font = fitz.Font("helv")
-            writer.append((x, y), text, font=font, fontsize=font_size)
-            writer.write_text(page, color=fitz_color)
+        if page and text:
+            fitz_color = tuple(c/255 for c in color) if max(color) > 1 else color
+            page.insert_text((x, y), text, fontsize=font_size, fontname="helv", color=fitz_color)
             self.is_modified = True
     
-    def add_highlight(self, page_num: int, rect: Tuple, color=(1, 1, 0)):
+    def add_highlight(self, page_num, rect, color=(1, 1, 0)):
         page = self.get_page(page_num)
         if page:
             annot = page.add_highlight_annot(fitz.Rect(rect))
@@ -478,21 +835,19 @@ class PDFDocument:
             annot.update()
             self.is_modified = True
     
-    def add_underline(self, page_num: int, rect: Tuple):
+    def add_underline(self, page_num, rect):
         page = self.get_page(page_num)
         if page:
-            annot = page.add_underline_annot(fitz.Rect(rect))
-            annot.update()
+            page.add_underline_annot(fitz.Rect(rect)).update()
             self.is_modified = True
     
-    def add_strikethrough(self, page_num: int, rect: Tuple):
+    def add_strikethrough(self, page_num, rect):
         page = self.get_page(page_num)
         if page:
-            annot = page.add_strikeout_annot(fitz.Rect(rect))
-            annot.update()
+            page.add_strikeout_annot(fitz.Rect(rect)).update()
             self.is_modified = True
     
-    def add_rect(self, page_num: int, rect: Tuple, color=(1, 0, 0), width=2):
+    def add_rect(self, page_num, rect, color=(1, 0, 0), width=2):
         page = self.get_page(page_num)
         if page:
             shape = page.new_shape()
@@ -501,16 +856,16 @@ class PDFDocument:
             shape.commit()
             self.is_modified = True
     
-    def add_circle(self, page_num: int, rect: Tuple, color=(1, 0, 0), width=2):
+    def add_circle(self, page_num, rect, color=(1, 0, 0), width=2):
         page = self.get_page(page_num)
         if page:
             shape = page.new_shape()
-            shape.draw_circle(fitz.Rect(rect).center, min(rect[2]-rect[0], rect[3]-rect[1])/2)
+            shape.draw_oval(fitz.Rect(rect))
             shape.finish(color=color, width=width)
             shape.commit()
             self.is_modified = True
     
-    def add_line(self, page_num: int, p1: Tuple, p2: Tuple, color=(1, 0, 0), width=2):
+    def add_line(self, page_num, p1, p2, color=(0, 0, 0), width=2):
         page = self.get_page(page_num)
         if page:
             shape = page.new_shape()
@@ -519,26 +874,26 @@ class PDFDocument:
             shape.commit()
             self.is_modified = True
     
-    def add_arrow(self, page_num: int, p1: Tuple, p2: Tuple, color=(1, 0, 0)):
+    def add_arrow(self, page_num, p1, p2, color=(0, 0, 0)):
         page = self.get_page(page_num)
         if page:
             annot = page.add_line_annot(fitz.Point(p1), fitz.Point(p2))
             annot.set_colors(stroke=color)
-            annot.set_line_ends(fitz.PDF_ANNOT_LE_NONE, fitz.PDF_ANNOT_LE_OPEN_ARROW)
+            annot.set_line_ends(fitz.PDF_ANNOT_LE_NONE, fitz.PDF_ANNOT_LE_CLOSED_ARROW)
+            annot.set_border(width=2)
             annot.update()
             self.is_modified = True
     
-    def add_freehand(self, page_num: int, points: List[Tuple], color=(0, 0, 1), width=2):
+    def add_freehand(self, page_num, points, color=(0, 0, 0), width=2):
         page = self.get_page(page_num)
         if page and len(points) >= 2:
-            shape = page.new_shape()
-            shape.draw_polyline(points)
-            shape.finish(color=color, width=width)
-            shape.commit()
+            annot = page.add_ink_annot([points])
+            annot.set_colors(stroke=color)
+            annot.set_border(width=width)
+            annot.update()
             self.is_modified = True
     
-    def add_image(self, page_num: int, image_path: str, x: float, y: float,
-                  width: float = None, height: float = None):
+    def add_image(self, page_num, image_path, x=None, y=None, width=None, height=None):
         page = self.get_page(page_num)
         if not page:
             return False
@@ -550,37 +905,59 @@ class PDFDocument:
             elif height and not width:
                 width = height * iw / ih
             elif not width and not height:
-                width, height = min(iw, 300), min(ih, 300)
-                if iw > 300 or ih > 300:
-                    scale = 300 / max(iw, ih)
-                    width, height = iw * scale, ih * scale
+                scale = min(300/iw, 300/ih, 1.0)
+                width, height = iw * scale, ih * scale
+            if x is None:
+                x = (page.rect.width - width) / 2
+            if y is None:
+                y = (page.rect.height - height) / 2
             page.insert_image(fitz.Rect(x, y, x+width, y+height), filename=image_path)
             self.is_modified = True
             return True
         except:
             return False
     
-    def redact_area(self, page_num: int, rect: Tuple):
+    def add_stamp(self, page_num, x, y, stamp):
+        page = self.get_page(page_num)
+        if not page:
+            return
+        text = stamp['text']
+        font_size = 14
+        text_width = len(text) * font_size * 0.6
+        stamp_w, stamp_h = text_width + 20, font_size + 16
+        
+        def hex_to_rgb(h):
+            h = h.lstrip('#')
+            return tuple(int(h[i:i+2], 16)/255 for i in (0, 2, 4))
+        
+        bg = hex_to_rgb(stamp['bg'])
+        fg = hex_to_rgb(stamp['fg'])
+        
+        shape = page.new_shape()
+        shape.draw_rect(fitz.Rect(x, y, x + stamp_w, y + stamp_h))
+        shape.finish(color=bg, fill=bg, width=2)
+        shape.commit()
+        
+        page.insert_text((x + 10, y + stamp_h - 8), text, fontsize=font_size, fontname="hebo", color=fg)
+        self.is_modified = True
+    
+    def redact_area(self, page_num, rect):
         page = self.get_page(page_num)
         if page:
-            page.add_redact_annot(fitz.Rect(rect))
+            page.add_redact_annot(fitz.Rect(rect), fill=(0, 0, 0))
             page.apply_redactions()
             self.is_modified = True
     
     # Comments
-    def add_comment(self, page: int, x: float, y: float, content: str) -> Comment:
+    def add_comment(self, page, x, y, content, author="User"):
         self._comment_counter += 1
-        comment = Comment(f"comment_{self._comment_counter}", page, x, y, content)
+        comment = Comment(f"c_{self._comment_counter}", page, x, y, content, author,
+                         datetime.now().strftime("%Y-%m-%d %H:%M"))
         self.comments.append(comment)
         self.is_modified = True
         return comment
     
-    def delete_comment(self, comment_id: str):
-        self.comments = [c for c in self.comments if c.id != comment_id]
-        self.is_modified = True
-    
     def _load_comments(self):
-        # Load comments from PDF annotations
         if not self.doc:
             return
         for i, page in enumerate(self.doc):
@@ -589,172 +966,139 @@ class PDFDocument:
                     self._comment_counter += 1
                     rect = annot.rect
                     self.comments.append(Comment(
-                        f"comment_{self._comment_counter}",
-                        i, rect.x0, rect.y0,
+                        f"c_{self._comment_counter}", i, rect.x0, rect.y0,
                         annot.info.get("content", ""),
                         annot.info.get("title", "User")
                     ))
     
     def _save_comments(self):
-        # Save comments as PDF annotations
         if not self.doc:
             return
-        # Remove existing text annotations
         for page in self.doc:
-            annots_to_delete = [a for a in page.annots() if a.type[0] == fitz.PDF_ANNOT_TEXT]
-            for annot in annots_to_delete:
-                page.delete_annot(annot)
-        # Add current comments
-        for comment in self.comments:
-            page = self.get_page(comment.page)
+            for a in [ann for ann in page.annots() if ann.type[0] == fitz.PDF_ANNOT_TEXT]:
+                page.delete_annot(a)
+        for c in self.comments:
+            page = self.get_page(c.page)
             if page:
-                annot = page.add_text_annot((comment.x, comment.y), comment.content)
-                annot.set_info(title=comment.author)
+                annot = page.add_text_annot((c.x, c.y), c.content)
+                annot.set_info(title=c.author)
                 annot.update()
     
     # Bookmarks
-    def get_bookmarks(self) -> List[Tuple[int, str, int]]:
-        """Returns list of (level, title, page)"""
+    def get_bookmarks(self):
         if not self.doc:
             return []
-        toc = self.doc.get_toc()
-        return [(item[0], item[1], item[2]-1) for item in toc]
+        return [(item[0], item[1], item[2]-1) for item in self.doc.get_toc()]
     
     # Form fields
-    def get_form_fields(self, page_num: int) -> List[Dict]:
-        page = self.get_page(page_num)
-        if not page:
-            return []
+    def get_form_fields(self, page_num=None):
         fields = []
-        for widget in page.widgets():
-            fields.append({
-                'name': widget.field_name,
-                'type': widget.field_type_string,
-                'value': widget.field_value,
-                'rect': tuple(widget.rect),
-                'widget': widget
-            })
-        return fields
-    
-    def set_form_field(self, page_num: int, field_name: str, value: str):
-        page = self.get_page(page_num)
-        if not page:
-            return
-        for widget in page.widgets():
-            if widget.field_name == field_name:
-                widget.field_value = value
-                widget.update()
-                self.is_modified = True
-                break
-    
-    # Optimization
-    def compress(self, output_path: str, image_quality: int = 75) -> bool:
         if not self.doc:
-            return False
-        try:
-            self.doc.save(output_path, garbage=4, deflate=True, 
-                         clean=True, linear=True)
-            return True
-        except:
-            return False
-    
-    # Watermarks
-    def add_watermark(self, text: str, font_size: int = 48, color: Tuple = (0.8, 0.8, 0.8),
-                      angle: float = 45, pages: List[int] = None):
-        if not self.doc:
-            return
-        pages = pages or range(len(self.doc))
+            return fields
+        pages = [page_num] if page_num is not None else range(len(self.doc))
         for pnum in pages:
             page = self.get_page(pnum)
-            if not page:
-                continue
+            if page:
+                for widget in page.widgets():
+                    fields.append({
+                        'page': pnum, 'name': widget.field_name,
+                        'type': widget.field_type_string,
+                        'value': widget.field_value or '',
+                        'rect': tuple(widget.rect), 'widget': widget
+                    })
+        return fields
+    
+    def set_form_field(self, page_num, name, value):
+        page = self.get_page(page_num)
+        if page:
+            for widget in page.widgets():
+                if widget.field_name == name:
+                    widget.field_value = value
+                    widget.update()
+                    self.is_modified = True
+                    return True
+        return False
+    
+    # Document operations
+    def compress(self, output_path):
+        if self.doc:
+            try:
+                self.doc.save(output_path, garbage=4, deflate=True, clean=True, linear=True)
+                return True
+            except:
+                pass
+        return False
+    
+    def add_watermark(self, text, font_size=48, color=(0.8, 0.8, 0.8), angle=45):
+        if not self.doc:
+            return
+        for page in self.doc:
             rect = page.rect
             cx, cy = rect.width / 2, rect.height / 2
             text_width = len(text) * font_size * 0.5
-            page.insert_text(
-                fitz.Point(cx - text_width/2, cy + font_size/3),
-                text, fontsize=font_size, fontname="helv",
-                color=color, rotate=angle
-            )
+            page.insert_text(fitz.Point(cx - text_width/2, cy), text,
+                           fontsize=font_size, fontname="helv", color=color, rotate=angle)
         self.is_modified = True
     
-    # Headers & Footers
-    def add_header_footer(self, header: str = None, footer: str = None,
-                         font_size: int = 10, margin: float = 36,
-                         pages: List[int] = None, start_page: int = 1):
-        if not self.doc:
-            return
-        pages = pages or range(len(self.doc))
-        for i, pnum in enumerate(pages):
-            page = self.get_page(pnum)
-            if not page:
-                continue
-            pw, ph = page.rect.width, page.rect.height
-            page_num = start_page + i
-            
-            def process_text(txt):
-                if not txt:
-                    return None
-                txt = txt.replace("{page}", str(page_num))
-                txt = txt.replace("{pages}", str(len(self.doc)))
-                txt = txt.replace("{date}", datetime.now().strftime("%Y-%m-%d"))
-                txt = txt.replace("{filename}", self.filename)
-                return txt
-            
-            if header:
-                h_text = process_text(header)
-                text_width = len(h_text) * font_size * 0.4
-                x = (pw - text_width) / 2
-                page.insert_text((x, margin), h_text, fontsize=font_size, fontname="helv", color=(0, 0, 0))
-            
-            if footer:
-                f_text = process_text(footer)
-                text_width = len(f_text) * font_size * 0.4
-                x = (pw - text_width) / 2
-                page.insert_text((x, ph - margin + font_size), f_text, fontsize=font_size, fontname="helv", color=(0, 0, 0))
-        self.is_modified = True
-    
-    # Bates Numbering
-    def add_bates_numbers(self, prefix: str = "", start: int = 1, digits: int = 6,
-                         suffix: str = "", position: str = "bottom-right",
-                         font_size: int = 10, margin: float = 36):
+    def add_header_footer(self, header=None, footer=None, font_size=10, margin=36):
         if not self.doc:
             return
         for i, page in enumerate(self.doc):
-            num = start + i
-            bates = f"{prefix}{num:0{digits}d}{suffix}"
             pw, ph = page.rect.width, page.rect.height
-            text_width = len(bates) * font_size * 0.5
+            page_num = i + 1
+            
+            def process(txt):
+                if not txt:
+                    return None
+                return txt.replace("{page}", str(page_num)).replace("{pages}", str(len(self.doc))).replace("{date}", datetime.now().strftime("%Y-%m-%d"))
+            
+            if header:
+                h = process(header)
+                x = (pw - len(h) * font_size * 0.4) / 2
+                page.insert_text((x, margin), h, fontsize=font_size, fontname="helv", color=(0, 0, 0))
+            if footer:
+                f = process(footer)
+                x = (pw - len(f) * font_size * 0.4) / 2
+                page.insert_text((x, ph - margin + font_size), f, fontsize=font_size, fontname="helv", color=(0, 0, 0))
+        self.is_modified = True
+    
+    def add_bates_numbers(self, prefix="", start=1, digits=6, position="bottom-right", font_size=10, margin=36):
+        if not self.doc:
+            return
+        for i, page in enumerate(self.doc):
+            bates = f"{prefix}{start + i:0{digits}d}"
+            pw, ph = page.rect.width, page.rect.height
+            tw = len(bates) * font_size * 0.5
             positions = {
                 "top-left": (margin, margin + font_size),
-                "top-center": ((pw - text_width) / 2, margin + font_size),
-                "top-right": (pw - text_width - margin, margin + font_size),
+                "top-right": (pw - tw - margin, margin + font_size),
                 "bottom-left": (margin, ph - margin),
-                "bottom-center": ((pw - text_width) / 2, ph - margin),
-                "bottom-right": (pw - text_width - margin, ph - margin),
+                "bottom-right": (pw - tw - margin, ph - margin),
             }
             x, y = positions.get(position, positions["bottom-right"])
             page.insert_text((x, y), bates, fontsize=font_size, fontname="helv", color=(0, 0, 0))
         self.is_modified = True
     
-    # Flatten annotations
     def flatten_annotations(self):
-        if not self.doc:
-            return
-        for page in self.doc:
-            for annot in list(page.annots()):
-                annot.set_flags(fitz.PDF_ANNOT_IS_PRINT)
-            page.clean_contents()
-        self.is_modified = True
+        if self.doc:
+            for page in self.doc:
+                page.clean_contents()
+            self.is_modified = True
     
-    # Remove metadata
     def remove_metadata(self):
         if self.doc:
             self.doc.set_metadata({})
             self.is_modified = True
     
-    # Export to Word
-    def export_to_word(self, output_path: str) -> bool:
+    def get_metadata(self):
+        return dict(self.doc.metadata) if self.doc else {}
+    
+    def set_metadata(self, data):
+        if self.doc:
+            self.doc.set_metadata(data)
+            self.is_modified = True
+    
+    def export_to_word(self, output_path):
         if not HAS_DOCX or not self.doc:
             return False
         try:
@@ -770,22 +1114,19 @@ class PDFDocument:
         except:
             return False
     
-    # Export to images
-    def export_to_images(self, output_dir: str, dpi: int = 150, fmt: str = "png") -> List[str]:
+    def export_to_images(self, output_dir, dpi=150, fmt="png"):
         files = []
         if not self.doc:
             return files
         zoom = dpi / 72
         for i in range(len(self.doc)):
-            page = self.doc[i]
-            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+            pix = self.doc[i].get_pixmap(matrix=fitz.Matrix(zoom, zoom))
             path = os.path.join(output_dir, f"page_{i+1:03d}.{fmt}")
             pix.save(path)
             files.append(path)
         return files
     
-    # Export text
-    def export_text(self, output_path: str) -> bool:
+    def export_text(self, output_path):
         if not self.doc:
             return False
         try:
@@ -796,50 +1137,14 @@ class PDFDocument:
         except:
             return False
     
-    # Add stamp
-    def add_stamp(self, page_num: int, x: float, y: float, stamp: dict):
-        page = self.get_page(page_num)
-        if not page:
-            return
-        text = stamp['text']
-        font_size = 14
-        text_width = len(text) * font_size * 0.6
-        stamp_w = text_width + 20
-        stamp_h = font_size + 16
-        
-        def hex_to_rgb(h):
-            h = h.lstrip('#')
-            return tuple(int(h[i:i+2], 16)/255 for i in (0, 2, 4))
-        
-        bg = hex_to_rgb(stamp['bg'])
-        fg = hex_to_rgb(stamp['color'])
-        
-        shape = page.new_shape()
-        shape.draw_rect(fitz.Rect(x, y, x + stamp_w, y + stamp_h))
-        shape.finish(color=bg, fill=bg, width=2)
-        shape.commit()
-        
-        page.insert_text((x + 10, y + stamp_h - 8), text, fontsize=font_size, fontname="hebo", color=fg)
-        self.is_modified = True
-    
-    # Metadata
-    def get_metadata(self) -> Dict:
-        return dict(self.doc.metadata) if self.doc else {}
-    
-    def set_metadata(self, metadata: Dict):
-        if self.doc:
-            self.doc.set_metadata(metadata)
-            self.is_modified = True
-    
-    # Merge/Split
-    def merge_pdf(self, other_path: str):
+    def merge_pdf(self, other_path):
         if self.doc:
             other = fitz.open(other_path)
             self.doc.insert_pdf(other)
             other.close()
             self.is_modified = True
     
-    def split_pages(self, output_dir: str) -> List[str]:
+    def split_pages(self, output_dir):
         files = []
         if not self.doc:
             return files
@@ -858,7 +1163,7 @@ class PDFDocument:
 
 class OCREngine:
     @staticmethod
-    def is_available() -> Tuple[bool, str]:
+    def is_available():
         try:
             import pytesseract
             OCREngine._configure()
@@ -867,38 +1172,34 @@ class OCREngine:
         except ImportError:
             return False, "pytesseract not installed"
         except:
-            return False, "Tesseract not found. Restart app to install."
+            return False, "Tesseract not found"
     
     @staticmethod
     def _configure():
         try:
             import pytesseract
-            path = os.environ.get("TESSERACT_CMD")
-            if path and os.path.exists(path):
-                pytesseract.pytesseract.tesseract_cmd = path
+            if path := os.environ.get("TESSERACT_CMD"):
+                if os.path.exists(path):
+                    pytesseract.pytesseract.tesseract_cmd = path
         except:
             pass
     
     @staticmethod
-    def make_searchable(doc: PDFDocument, page_num: int = None, 
-                        callback: Callable = None) -> Tuple[bool, int]:
+    def make_searchable(doc, callback=None):
         try:
             import pytesseract
             OCREngine._configure()
         except:
             return False, 0
         
-        pages = [page_num] if page_num is not None else range(doc.page_count)
         processed = 0
-        
-        for pnum in pages:
+        for pnum in range(doc.page_count):
             page = doc.get_page(pnum)
             if not page:
                 continue
             if callback:
-                callback(f"OCR page {pnum + 1}...")
+                callback(f"Processing page {pnum + 1}...")
             
-            # Render at 2x
             img = doc.render_page(pnum, zoom=2.0)
             if not img:
                 continue
@@ -907,7 +1208,6 @@ class OCREngine:
             iw, ih = img.size
             sx, sy = pw / iw, ph / ih
             
-            # Get word boxes
             data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
             
             for i in range(len(data['text'])):
@@ -917,364 +1217,22 @@ class OCREngine:
                     continue
                 
                 x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-                px, py = x * sx, y * sy
-                pw_t, ph_t = w * sx, h * sy
+                px, py, pw_t, ph_t = x * sx, y * sy, w * sx, h * sy
                 
-                fs = ph_t * 0.85
-                fs = max(4, min(72, fs))
-                
+                fs = max(4, min(72, ph_t * 0.85))
                 try:
                     tl = fitz.get_text_length(text, fontsize=fs)
                     if tl > 0 and pw_t > 0:
                         fs = max(4, min(72, fs * (pw_t / tl)))
-                    
-                    page.insert_text(
-                        (px, py + ph_t * 0.85),
-                        text, fontsize=fs, fontname="helv",
-                        color=(0, 0, 0), render_mode=3
-                    )
+                    page.insert_text((px, py + ph_t * 0.85), text, fontsize=fs,
+                                    fontname="helv", color=(0, 0, 0), render_mode=3)
                 except:
                     pass
-            
             processed += 1
         
         if processed > 0:
             doc.is_modified = True
         return processed > 0, processed
-    
-    @staticmethod
-    def extract_text(doc: PDFDocument, callback: Callable = None) -> str:
-        try:
-            import pytesseract
-            OCREngine._configure()
-        except:
-            return ""
-        
-        texts = []
-        for i in range(doc.page_count):
-            if callback:
-                callback(f"Page {i + 1}...")
-            img = doc.render_page(i, zoom=2.0)
-            if img:
-                texts.append(f"--- Page {i + 1} ---\n{pytesseract.image_to_string(img)}")
-        return "\n\n".join(texts)
-
-# ============================================================================
-# UI COMPONENTS
-# ============================================================================
-
-class ToolButton(tk.Canvas):
-    def __init__(self, parent, text="", icon="", tooltip="", command=None, 
-                 size=36, toggle=False, **kw):
-        super().__init__(parent, width=size, height=size, 
-                        bg=Theme.BG_SECONDARY, highlightthickness=0, **kw)
-        self.text = icon or text
-        self.tooltip_text = tooltip
-        self.command = command
-        self.size = size
-        self.toggle = toggle
-        self.is_active = False
-        self.is_hover = False
-        self._tip = None
-        
-        self._draw()
-        self.bind("<Enter>", self._enter)
-        self.bind("<Leave>", self._leave)
-        self.bind("<Button-1>", self._click)
-    
-    def _draw(self):
-        self.delete("all")
-        if self.is_active:
-            fill = Theme.ACCENT
-        elif self.is_hover:
-            fill = Theme.BG_HOVER
-        else:
-            fill = Theme.BG_SECONDARY
-        
-        self.create_rectangle(2, 2, self.size-2, self.size-2, fill=fill, outline="")
-        fg = Theme.BG_PRIMARY if self.is_active else Theme.FG_PRIMARY
-        self.create_text(self.size//2, self.size//2, text=self.text, fill=fg,
-                        font=(Theme.FONT, 12))
-    
-    def _enter(self, e):
-        self.is_hover = True
-        self._draw()
-        if self.tooltip_text:
-            self._tip = tk.Toplevel(self)
-            self._tip.wm_overrideredirect(True)
-            self._tip.wm_geometry(f"+{self.winfo_rootx()+self.size}+{self.winfo_rooty()}")
-            tk.Label(self._tip, text=self.tooltip_text, bg=Theme.BG_TERTIARY, 
-                    fg=Theme.FG_PRIMARY, padx=6, pady=3,
-                    font=(Theme.FONT, Theme.FONT_SMALL)).pack()
-    
-    def _leave(self, e):
-        self.is_hover = False
-        self._draw()
-        if self._tip:
-            self._tip.destroy()
-            self._tip = None
-    
-    def _click(self, e):
-        if self.toggle:
-            self.is_active = not self.is_active
-            self._draw()
-        if self.command:
-            self.command()
-    
-    def set_active(self, active: bool):
-        self.is_active = active
-        self._draw()
-
-class SearchBar(tk.Frame):
-    def __init__(self, parent, on_search: Callable, on_close: Callable, **kw):
-        super().__init__(parent, bg=Theme.BG_TERTIARY, **kw)
-        self.on_search = on_search
-        self.on_close = on_close
-        
-        # Search entry
-        self.entry = tk.Entry(self, width=30, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY,
-                             insertbackground=Theme.FG_PRIMARY, relief=tk.FLAT,
-                             font=(Theme.FONT, Theme.FONT_SIZE))
-        self.entry.pack(side=tk.LEFT, padx=(10, 5), pady=8)
-        self.entry.bind("<Return>", lambda e: self._search())
-        self.entry.bind("<Escape>", lambda e: self.on_close())
-        
-        # Buttons
-        tk.Button(self, text="Find", command=self._search, bg=Theme.ACCENT, 
-                 fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=10,
-                 font=(Theme.FONT, Theme.FONT_SMALL)).pack(side=tk.LEFT, padx=2)
-        
-        tk.Button(self, text="◀", command=lambda: self._search(-1), 
-                 bg=Theme.BG_HOVER, fg=Theme.FG_PRIMARY, relief=tk.FLAT, width=3,
-                 font=(Theme.FONT, Theme.FONT_SMALL)).pack(side=tk.LEFT, padx=2)
-        
-        tk.Button(self, text="▶", command=lambda: self._search(1), 
-                 bg=Theme.BG_HOVER, fg=Theme.FG_PRIMARY, relief=tk.FLAT, width=3,
-                 font=(Theme.FONT, Theme.FONT_SMALL)).pack(side=tk.LEFT, padx=2)
-        
-        # Results label
-        self.results_label = tk.Label(self, text="", bg=Theme.BG_TERTIARY, 
-                                      fg=Theme.FG_SECONDARY,
-                                      font=(Theme.FONT, Theme.FONT_SMALL))
-        self.results_label.pack(side=tk.LEFT, padx=10)
-        
-        # Close button
-        tk.Button(self, text="✕", command=self.on_close, bg=Theme.BG_TERTIARY,
-                 fg=Theme.FG_SECONDARY, relief=tk.FLAT, width=2,
-                 font=(Theme.FONT, Theme.FONT_SIZE)).pack(side=tk.RIGHT, padx=5)
-        
-        self.results: List[SearchResult] = []
-        self.current_idx = -1
-    
-    def _search(self, direction: int = 0):
-        query = self.entry.get()
-        if not query:
-            return
-        
-        if direction == 0:  # New search
-            self.results = self.on_search(query)
-            self.current_idx = 0 if self.results else -1
-        else:  # Navigate
-            if self.results:
-                self.current_idx = (self.current_idx + direction) % len(self.results)
-        
-        if self.results:
-            self.results_label.config(text=f"{self.current_idx + 1} of {len(self.results)}")
-        else:
-            self.results_label.config(text="No results")
-    
-    def focus_entry(self):
-        self.entry.focus_set()
-        self.entry.select_range(0, tk.END)
-    
-    def get_current_result(self) -> Optional[SearchResult]:
-        if 0 <= self.current_idx < len(self.results):
-            return self.results[self.current_idx]
-        return None
-
-class SidebarPanel(tk.Frame):
-    def __init__(self, parent, title: str, **kw):
-        super().__init__(parent, bg=Theme.BG_SECONDARY, **kw)
-        
-        # Header
-        header = tk.Frame(self, bg=Theme.BG_TERTIARY)
-        header.pack(fill=tk.X)
-        
-        tk.Label(header, text=title, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY,
-                font=(Theme.FONT, Theme.FONT_LARGE, "bold"),
-                padx=10, pady=8).pack(side=tk.LEFT)
-        
-        # Content area
-        self.content = tk.Frame(self, bg=Theme.BG_SECONDARY)
-        self.content.pack(fill=tk.BOTH, expand=True)
-
-class PageThumbnail(tk.Canvas):
-    def __init__(self, parent, page_num: int, image: Image.Image, 
-                 on_select: Callable, on_context: Callable = None, **kw):
-        super().__init__(parent, width=130, height=170, 
-                        bg=Theme.BG_SECONDARY, highlightthickness=0, **kw)
-        self.page_num = page_num
-        self.on_select = on_select
-        self.on_context = on_context
-        self.selected = False
-        self.hover = False
-        
-        # Resize thumbnail
-        image.thumbnail((110, 140), Image.Resampling.LANCZOS)
-        self.photo = ImageTk.PhotoImage(image)
-        
-        self._draw()
-        self.bind("<Enter>", lambda e: self._set_hover(True))
-        self.bind("<Leave>", lambda e: self._set_hover(False))
-        self.bind("<Button-1>", lambda e: self.on_select(self.page_num))
-        self.bind("<Button-3>", self._context_menu)
-    
-    def _draw(self):
-        self.delete("all")
-        if self.selected:
-            self.create_rectangle(0, 0, 130, 170, fill=Theme.BG_SELECTED, outline="")
-        elif self.hover:
-            self.create_rectangle(0, 0, 130, 170, fill=Theme.BG_HOVER, outline="")
-        
-        # Border
-        bc = Theme.ACCENT if self.selected else Theme.BORDER
-        self.create_rectangle(9, 5, 121, 145, fill="#ffffff", outline=bc, width=2)
-        self.create_image(65, 75, image=self.photo)
-        
-        # Page number
-        self.create_text(65, 158, text=str(self.page_num + 1), 
-                        fill=Theme.FG_PRIMARY, font=(Theme.FONT, Theme.FONT_SMALL))
-    
-    def _set_hover(self, h: bool):
-        self.hover = h
-        self._draw()
-    
-    def set_selected(self, s: bool):
-        self.selected = s
-        self._draw()
-    
-    def _context_menu(self, event):
-        if self.on_context:
-            self.on_context(event, self.page_num)
-
-class PropertiesPanel(tk.Frame):
-    def __init__(self, parent, **kw):
-        super().__init__(parent, bg=Theme.BG_SECONDARY, width=250, **kw)
-        self.pack_propagate(False)
-        
-        # Header
-        header = tk.Frame(self, bg=Theme.BG_TERTIARY)
-        header.pack(fill=tk.X)
-        tk.Label(header, text="Properties", bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY,
-                font=(Theme.FONT, Theme.FONT_LARGE, "bold"),
-                padx=10, pady=8).pack(side=tk.LEFT)
-        
-        # Content
-        self.content = tk.Frame(self, bg=Theme.BG_SECONDARY)
-        self.content.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        self.info_labels = {}
-    
-    def show_page_info(self, doc: PDFDocument, page_num: int):
-        for w in self.content.winfo_children():
-            w.destroy()
-        
-        if not doc.doc:
-            return
-        
-        page = doc.get_page(page_num)
-        if not page:
-            return
-        
-        info = [
-            ("Page", str(page_num + 1)),
-            ("Width", f"{page.rect.width:.1f} pt"),
-            ("Height", f"{page.rect.height:.1f} pt"),
-            ("Rotation", f"{page.rotation}°"),
-        ]
-        
-        for label, value in info:
-            row = tk.Frame(self.content, bg=Theme.BG_SECONDARY)
-            row.pack(fill=tk.X, pady=3)
-            tk.Label(row, text=label + ":", bg=Theme.BG_SECONDARY, fg=Theme.FG_SECONDARY,
-                    font=(Theme.FONT, Theme.FONT_SMALL), width=10, anchor='w').pack(side=tk.LEFT)
-            tk.Label(row, text=value, bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY,
-                    font=(Theme.FONT, Theme.FONT_SMALL)).pack(side=tk.LEFT)
-    
-    def show_document_info(self, doc: PDFDocument):
-        for w in self.content.winfo_children():
-            w.destroy()
-        
-        if not doc.doc:
-            return
-        
-        meta = doc.doc.metadata
-        info = [
-            ("File", doc.filename),
-            ("Pages", str(doc.page_count)),
-            ("Title", meta.get('title', 'N/A')[:20]),
-            ("Author", meta.get('author', 'N/A')[:20]),
-        ]
-        
-        for label, value in info:
-            row = tk.Frame(self.content, bg=Theme.BG_SECONDARY)
-            row.pack(fill=tk.X, pady=3)
-            tk.Label(row, text=label + ":", bg=Theme.BG_SECONDARY, fg=Theme.FG_SECONDARY,
-                    font=(Theme.FONT, Theme.FONT_SMALL), width=10, anchor='w').pack(side=tk.LEFT)
-            tk.Label(row, text=value, bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY,
-                    font=(Theme.FONT, Theme.FONT_SMALL), wraplength=120, anchor='w').pack(side=tk.LEFT)
-
-class TabBar(tk.Frame):
-    def __init__(self, parent, on_select: Callable, on_close: Callable, **kw):
-        super().__init__(parent, bg=Theme.BG_PRIMARY, height=32, **kw)
-        self.pack_propagate(False)
-        self.on_select = on_select
-        self.on_close = on_close
-        self.tabs: Dict[str, tk.Frame] = {}
-        self.active_tab: str = None
-    
-    def add_tab(self, tab_id: str, title: str):
-        tab = tk.Frame(self, bg=Theme.BG_SECONDARY, padx=10, pady=5)
-        tab.pack(side=tk.LEFT, padx=(1, 0))
-        
-        label = tk.Label(tab, text=title[:20], bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY,
-                        font=(Theme.FONT, Theme.FONT_SMALL))
-        label.pack(side=tk.LEFT)
-        
-        close_btn = tk.Label(tab, text="✕", bg=Theme.BG_SECONDARY, fg=Theme.FG_MUTED,
-                            font=(Theme.FONT, Theme.FONT_SMALL), cursor="hand2")
-        close_btn.pack(side=tk.LEFT, padx=(8, 0))
-        close_btn.bind("<Button-1>", lambda e: self.on_close(tab_id))
-        
-        tab.bind("<Button-1>", lambda e: self.on_select(tab_id))
-        label.bind("<Button-1>", lambda e: self.on_select(tab_id))
-        
-        self.tabs[tab_id] = tab
-        self.set_active(tab_id)
-    
-    def remove_tab(self, tab_id: str):
-        if tab_id in self.tabs:
-            self.tabs[tab_id].destroy()
-            del self.tabs[tab_id]
-    
-    def set_active(self, tab_id: str):
-        for tid, tab in self.tabs.items():
-            if tid == tab_id:
-                tab.configure(bg=Theme.BG_TERTIARY)
-                for child in tab.winfo_children():
-                    child.configure(bg=Theme.BG_TERTIARY)
-            else:
-                tab.configure(bg=Theme.BG_SECONDARY)
-                for child in tab.winfo_children():
-                    child.configure(bg=Theme.BG_SECONDARY)
-        self.active_tab = tab_id
-    
-    def update_title(self, tab_id: str, title: str):
-        if tab_id in self.tabs:
-            for child in self.tabs[tab_id].winfo_children():
-                if isinstance(child, tk.Label) and child.cget("text") != "✕":
-                    child.configure(text=title[:20])
-                    break
 
 # ============================================================================
 # MAIN APPLICATION
@@ -1284,43 +1242,50 @@ class PDFEditorPro(tk.Tk):
     def __init__(self):
         super().__init__()
         
-        self.title("PDF Editor Pro v3.0")
-        self.geometry("1400x900")
-        self.minsize(1100, 700)
-        self.configure(bg=Theme.BG_PRIMARY)
+        self.title("PDF Editor Pro")
+        self.geometry("1500x900")
+        self.minsize(1200, 750)
+        self.configure(bg=Theme.BG_DARK)
         
         # State
-        self.documents: Dict[str, PDFDocument] = {}
-        self.active_doc_id: str = None
+        self.documents = {}
+        self.active_doc_id = None
         self.current_page = 0
         self.zoom = 1.0
         self.tool_mode = ToolMode.SELECT
         self.draw_color = (0, 0, 0)
         self.draw_points = []
         self.drag_start = None
-        self.thumbnails: List[PageThumbnail] = []
         self.page_image = None
-        self.search_highlights = []
+        self.search_results = []
         self.selected_stamp = None
+        self.sidebar_mode = "pages"
         
-        # Config
         self.config_data = Config.load()
         
-        # Build UI
         self._build_menu()
         self._build_ui()
         self._bind_shortcuts()
         
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        
-        # Show welcome or recent
         self._show_welcome()
     
+    @property
+    def doc(self):
+        return self.documents.get(self.active_doc_id)
+    
+    # =========================================================================
+    # UI BUILDING
+    # =========================================================================
+    
     def _build_menu(self):
-        menubar = tk.Menu(self, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        menubar = tk.Menu(self, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY,
+                         activebackground=Theme.ACCENT, activeforeground=Theme.FG_PRIMARY,
+                         font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
         
-        # File menu
-        file_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        # File
+        file_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY,
+                           activebackground=Theme.ACCENT, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
         file_menu.add_command(label="New", command=self._new_doc, accelerator="Ctrl+N")
         file_menu.add_command(label="Open...", command=self._open_doc, accelerator="Ctrl+O")
         file_menu.add_separator()
@@ -1331,87 +1296,81 @@ class PDFEditorPro(tk.Tk):
         file_menu.add_separator()
         file_menu.add_command(label="Properties...", command=self._show_properties)
         file_menu.add_separator()
-        file_menu.add_command(label="Print...", command=self._print_doc, accelerator="Ctrl+P")
-        file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_close)
         menubar.add_cascade(label="File", menu=file_menu)
         
-        # Edit menu
-        edit_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        # Edit
+        edit_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY,
+                           activebackground=Theme.ACCENT, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
         edit_menu.add_command(label="Find...", command=self._show_search, accelerator="Ctrl+F")
         edit_menu.add_separator()
-        edit_menu.add_command(label="Copy Page Text", command=self._copy_page_text)
+        edit_menu.add_command(label="Copy Text", command=self._copy_text)
         menubar.add_cascade(label="Edit", menu=edit_menu)
         
-        # View menu
-        view_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        # View
+        view_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY,
+                           activebackground=Theme.ACCENT, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
         view_menu.add_command(label="Zoom In", command=self._zoom_in, accelerator="Ctrl++")
         view_menu.add_command(label="Zoom Out", command=self._zoom_out, accelerator="Ctrl+-")
-        view_menu.add_command(label="Fit Page", command=self._zoom_fit, accelerator="Ctrl+0")
-        view_menu.add_command(label="Actual Size (100%)", command=self._zoom_100, accelerator="Ctrl+1")
+        view_menu.add_command(label="Fit Page", command=self._zoom_fit)
+        view_menu.add_command(label="Actual Size", command=self._zoom_100)
         view_menu.add_separator()
-        view_menu.add_command(label="Rotate CW", command=lambda: self._rotate(self.current_page, 90))
-        view_menu.add_command(label="Rotate CCW", command=lambda: self._rotate(self.current_page, -90))
+        view_menu.add_command(label="Rotate CW", command=lambda: self._rotate(90))
+        view_menu.add_command(label="Rotate CCW", command=lambda: self._rotate(-90))
         menubar.add_cascade(label="View", menu=view_menu)
         
-        # Page menu
-        page_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
-        page_menu.add_command(label="Insert Blank Page", command=lambda: self._insert_page(self.current_page + 1))
+        # Page
+        page_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY,
+                           activebackground=Theme.ACCENT, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
+        page_menu.add_command(label="Insert Page", command=self._insert_page)
         page_menu.add_command(label="Duplicate Page", command=self._duplicate_page)
+        page_menu.add_command(label="Delete Page", command=self._delete_page)
         page_menu.add_separator()
-        page_menu.add_command(label="Delete Page", command=self._delete_page, accelerator="Delete")
-        page_menu.add_command(label="Extract Page...", command=lambda: self._extract_page(self.current_page))
-        page_menu.add_separator()
-        page_menu.add_command(label="Crop Page...", command=lambda: self._set_tool(ToolMode.CROP))
+        page_menu.add_command(label="Extract Page...", command=self._extract_page)
         menubar.add_cascade(label="Page", menu=page_menu)
         
-        # Tools menu
-        tools_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        # Tools
+        tools_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY,
+                            activebackground=Theme.ACCENT, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
         tools_menu.add_command(label="Add Text", command=lambda: self._set_tool(ToolMode.TEXT))
-        tools_menu.add_command(label="Add Sticky Note", command=lambda: self._set_tool(ToolMode.STICKY_NOTE))
-        tools_menu.add_command(label="Add Image...", command=self._add_image_dialog)
+        tools_menu.add_command(label="Add Comment", command=lambda: self._set_tool(ToolMode.STICKY_NOTE))
+        tools_menu.add_command(label="Add Image...", command=self._add_image)
+        tools_menu.add_command(label="Add Stamp...", command=self._show_stamp_dialog)
         tools_menu.add_separator()
         tools_menu.add_command(label="Highlight", command=lambda: self._set_tool(ToolMode.HIGHLIGHT))
         tools_menu.add_command(label="Underline", command=lambda: self._set_tool(ToolMode.UNDERLINE))
         tools_menu.add_command(label="Strikethrough", command=lambda: self._set_tool(ToolMode.STRIKETHROUGH))
         tools_menu.add_separator()
-        tools_menu.add_command(label="Rectangle", command=lambda: self._set_tool(ToolMode.RECTANGLE))
-        tools_menu.add_command(label="Circle", command=lambda: self._set_tool(ToolMode.CIRCLE))
-        tools_menu.add_command(label="Arrow", command=lambda: self._set_tool(ToolMode.ARROW))
-        tools_menu.add_command(label="Freehand", command=lambda: self._set_tool(ToolMode.DRAW))
-        tools_menu.add_separator()
-        tools_menu.add_command(label="Add Stamp...", command=self._show_stamp_picker)
-        tools_menu.add_separator()
-        tools_menu.add_command(label="Redact Area", command=lambda: self._set_tool(ToolMode.REDACT))
+        tools_menu.add_command(label="Redact", command=lambda: self._set_tool(ToolMode.REDACT))
         menubar.add_cascade(label="Tools", menu=tools_menu)
         
-        # Document menu
-        doc_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        # Document
+        doc_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY,
+                          activebackground=Theme.ACCENT, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
         doc_menu.add_command(label="Merge PDFs...", command=self._merge_pdfs)
-        doc_menu.add_command(label="Split Document...", command=self._split_document)
+        doc_menu.add_command(label="Split Document...", command=self._split_doc)
         doc_menu.add_separator()
         doc_menu.add_command(label="Add Watermark...", command=self._watermark_dialog)
         doc_menu.add_command(label="Add Header/Footer...", command=self._header_footer_dialog)
-        doc_menu.add_command(label="Add Bates Numbers...", command=self._bates_dialog)
+        doc_menu.add_command(label="Bates Numbering...", command=self._bates_dialog)
         doc_menu.add_separator()
-        doc_menu.add_command(label="OCR - Make Searchable...", command=self._ocr_document)
+        doc_menu.add_command(label="OCR - Make Searchable", command=self._ocr_doc)
         doc_menu.add_separator()
-        doc_menu.add_command(label="Compress PDF...", command=self._compress_pdf)
-        doc_menu.add_command(label="Flatten Annotations", command=self._flatten_annotations)
-        doc_menu.add_command(label="Remove Metadata", command=self._remove_metadata)
-        doc_menu.add_separator()
-        doc_menu.add_command(label="Set Password...", command=self._set_password_dialog)
+        doc_menu.add_command(label="Compress...", command=self._compress_doc)
+        doc_menu.add_command(label="Password Protect...", command=self._password_dialog)
         menubar.add_cascade(label="Document", menu=doc_menu)
         
-        # Export menu
-        export_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
-        export_menu.add_command(label="Export to Word...", command=self._export_to_word)
-        export_menu.add_command(label="Export to Images...", command=self._export_to_images)
+        # Export
+        export_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY,
+                             activebackground=Theme.ACCENT, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
+        export_menu.add_command(label="Export to Word...", command=self._export_word)
+        export_menu.add_command(label="Export to Images...", command=self._export_images)
         export_menu.add_command(label="Export Text...", command=self._export_text)
         menubar.add_cascade(label="Export", menu=export_menu)
         
-        # Help menu
-        help_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
+        # Help
+        help_menu = tk.Menu(menubar, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY,
+                           activebackground=Theme.ACCENT, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
         help_menu.add_command(label="Keyboard Shortcuts", command=self._show_shortcuts)
         help_menu.add_separator()
         help_menu.add_command(label="About", command=self._show_about)
@@ -1419,221 +1378,230 @@ class PDFEditorPro(tk.Tk):
         
         self.config(menu=menubar)
     
-    @property
-    def doc(self) -> Optional[PDFDocument]:
-        return self.documents.get(self.active_doc_id)
-    
     def _build_ui(self):
-        # Tab bar
-        self.tab_bar = TabBar(self, self._on_tab_select, self._on_tab_close)
-        self.tab_bar.pack(fill=tk.X)
-        
         # Main container
-        self.main = tk.Frame(self, bg=Theme.BG_PRIMARY)
-        self.main.pack(fill=tk.BOTH, expand=True)
+        main = tk.Frame(self, bg=Theme.BG_DARK)
+        main.pack(fill=tk.BOTH, expand=True)
+        
+        # Tab bar
+        self.tab_bar = tk.Frame(main, bg=Theme.BG_PRIMARY, height=Theme.TAB_HEIGHT)
+        self.tab_bar.pack(fill=tk.X)
+        self.tab_bar.pack_propagate(False)
+        self.tabs = {}
+        
+        # New tab button
+        new_tab_btn = tk.Label(self.tab_bar, text=" + ", bg=Theme.BG_PRIMARY, fg=Theme.FG_MUTED,
+                              font=(Theme.FONT_FAMILY, 14), cursor="hand2")
+        new_tab_btn.pack(side=tk.LEFT, padx=5, pady=5)
+        new_tab_btn.bind("<Button-1>", lambda e: self._new_doc())
+        new_tab_btn.bind("<Enter>", lambda e: new_tab_btn.configure(fg=Theme.FG_PRIMARY))
+        new_tab_btn.bind("<Leave>", lambda e: new_tab_btn.configure(fg=Theme.FG_MUTED))
         
         # Toolbar
-        self._build_toolbar()
+        self._build_toolbar(main)
         
         # Content area
-        content = tk.Frame(self.main, bg=Theme.BG_PRIMARY)
+        content = tk.Frame(main, bg=Theme.BG_DARK)
         content.pack(fill=tk.BOTH, expand=True)
         
         # Left sidebar
-        self._build_left_sidebar(content)
+        self._build_sidebar(content)
         
         # Canvas area
         self._build_canvas(content)
         
-        # Right sidebar
-        self.props_panel = PropertiesPanel(content)
-        self.props_panel.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Search bar (hidden initially)
-        self.search_bar = SearchBar(self.main, self._do_search, self._hide_search)
+        # Right panel (properties)
+        self._build_properties_panel(content)
         
         # Status bar
-        self._build_status_bar()
+        self._build_status_bar(main)
     
-    def _build_toolbar(self):
-        toolbar = tk.Frame(self.main, bg=Theme.BG_SECONDARY, height=50)
+    def _build_toolbar(self, parent):
+        toolbar = tk.Frame(parent, bg=Theme.BG_SECONDARY, height=Theme.TOOLBAR_HEIGHT)
         toolbar.pack(fill=tk.X)
         toolbar.pack_propagate(False)
         
         # File group
-        file_frame = tk.Frame(toolbar, bg=Theme.BG_SECONDARY)
-        file_frame.pack(side=tk.LEFT, padx=10, pady=7)
+        file_group = ToolbarGroup(toolbar, label="File")
+        file_group.pack(side=tk.LEFT, padx=Theme.PAD_MD, pady=Theme.PAD_SM)
+        file_group.add_button(icon="📄", label="New", command=self._new_doc, tooltip="New Document")
+        file_group.add_button(icon="📂", label="Open", command=self._open_doc, tooltip="Open File")
+        file_group.add_button(icon="💾", label="Save", command=self._save_doc, tooltip="Save")
         
-        self.tool_btns = {}
+        ToolbarSeparator(toolbar).pack(side=tk.LEFT, padx=Theme.PAD_SM, pady=Theme.PAD_LG)
         
-        for icon, tip, cmd in [
-            ("📄", "New (Ctrl+N)", self._new_doc),
-            ("📂", "Open (Ctrl+O)", self._open_doc),
-            ("💾", "Save (Ctrl+S)", self._save_doc),
-        ]:
-            ToolButton(file_frame, icon=icon, tooltip=tip, command=cmd).pack(side=tk.LEFT, padx=1)
+        # Tools group
+        tools_group = ToolbarGroup(toolbar, label="Tools")
+        tools_group.pack(side=tk.LEFT, padx=Theme.PAD_MD, pady=Theme.PAD_SM)
         
-        self._add_separator(toolbar)
-        
-        # Edit group
-        edit_frame = tk.Frame(toolbar, bg=Theme.BG_SECONDARY)
-        edit_frame.pack(side=tk.LEFT, padx=5, pady=7)
-        
-        self.undo_btn = ToolButton(edit_frame, icon="↩", tooltip="Undo (Ctrl+Z)", command=self._undo)
-        self.undo_btn.pack(side=tk.LEFT, padx=1)
-        self.redo_btn = ToolButton(edit_frame, icon="↪", tooltip="Redo (Ctrl+Y)", command=self._redo)
-        self.redo_btn.pack(side=tk.LEFT, padx=1)
-        
-        self._add_separator(toolbar)
-        
-        # Tool group
-        tool_frame = tk.Frame(toolbar, bg=Theme.BG_SECONDARY)
-        tool_frame.pack(side=tk.LEFT, padx=5, pady=7)
-        
+        self.tool_buttons = {}
         tools = [
-            ("👆", "Select", ToolMode.SELECT),
-            ("✋", "Pan", ToolMode.PAN),
-            ("T", "Add Text", ToolMode.TEXT),
-            ("📝", "Sticky Note", ToolMode.STICKY_NOTE),
-            ("🔆", "Highlight", ToolMode.HIGHLIGHT),
-            ("U̲", "Underline", ToolMode.UNDERLINE),
-            ("S̶", "Strikethrough", ToolMode.STRIKETHROUGH),
-            ("✏️", "Draw", ToolMode.DRAW),
-            ("▢", "Rectangle", ToolMode.RECTANGLE),
-            ("○", "Circle", ToolMode.CIRCLE),
-            ("↗", "Arrow", ToolMode.ARROW),
-            ("🖼", "Image", ToolMode.IMAGE),
-            ("▮", "Redact", ToolMode.REDACT),
-            ("✂", "Crop", ToolMode.CROP),
+            (ToolMode.SELECT, "👆", "Select"),
+            (ToolMode.PAN, "✋", "Pan"),
+            (ToolMode.TEXT, "T", "Text"),
+            (ToolMode.STICKY_NOTE, "📝", "Comment"),
+            (ToolMode.HIGHLIGHT, "🔆", "Highlight"),
+            (ToolMode.DRAW, "✏️", "Draw"),
         ]
+        for mode, icon, label in tools:
+            btn = tools_group.add_button(icon=icon, label=label, command=lambda m=mode: self._set_tool(m),
+                                        toggle=True, tooltip=label)
+            self.tool_buttons[mode] = btn
+        self.tool_buttons[ToolMode.SELECT].set_active(True)
         
-        for icon, tip, mode in tools:
-            btn = ToolButton(tool_frame, icon=icon, tooltip=tip, 
-                           command=lambda m=mode: self._set_tool(m))
-            btn.pack(side=tk.LEFT, padx=1)
-            self.tool_btns[mode] = btn
+        ToolbarSeparator(toolbar).pack(side=tk.LEFT, padx=Theme.PAD_SM, pady=Theme.PAD_LG)
         
-        self.tool_btns[ToolMode.SELECT].set_active(True)
+        # Shapes group
+        shapes_group = ToolbarGroup(toolbar, label="Shapes")
+        shapes_group.pack(side=tk.LEFT, padx=Theme.PAD_MD, pady=Theme.PAD_SM)
+        shapes = [
+            (ToolMode.RECTANGLE, "▢", "Rectangle"),
+            (ToolMode.CIRCLE, "○", "Circle"),
+            (ToolMode.ARROW, "↗", "Arrow"),
+            (ToolMode.LINE, "╱", "Line"),
+        ]
+        for mode, icon, label in shapes:
+            btn = shapes_group.add_button(icon=icon, label=label, command=lambda m=mode: self._set_tool(m),
+                                         toggle=True, tooltip=label)
+            self.tool_buttons[mode] = btn
         
-        self._add_separator(toolbar)
+        ToolbarSeparator(toolbar).pack(side=tk.LEFT, padx=Theme.PAD_SM, pady=Theme.PAD_LG)
         
-        # Color picker
-        self.color_btn = ToolButton(toolbar, icon="🎨", tooltip="Color",
-                                    command=self._pick_color)
-        self.color_btn.pack(side=tk.LEFT, padx=5, pady=7)
+        # Insert group
+        insert_group = ToolbarGroup(toolbar, label="Insert")
+        insert_group.pack(side=tk.LEFT, padx=Theme.PAD_MD, pady=Theme.PAD_SM)
+        insert_group.add_button(icon="🖼", label="Image", command=self._add_image, tooltip="Insert Image")
+        insert_group.add_button(icon="📌", label="Stamp", command=self._show_stamp_dialog, tooltip="Add Stamp")
+        btn = insert_group.add_button(icon="▮", label="Redact", command=lambda: self._set_tool(ToolMode.REDACT),
+                                     toggle=True, tooltip="Redact Area")
+        self.tool_buttons[ToolMode.REDACT] = btn
         
-        # Right side - Navigation & Zoom
-        right = tk.Frame(toolbar, bg=Theme.BG_SECONDARY)
-        right.pack(side=tk.RIGHT, padx=10, pady=7)
+        # Right side - Navigation
+        nav_frame = tk.Frame(toolbar, bg=Theme.BG_SECONDARY)
+        nav_frame.pack(side=tk.RIGHT, padx=Theme.PAD_LG, pady=Theme.PAD_MD)
         
-        # Zoom
-        ToolButton(right, icon="−", tooltip="Zoom Out", command=self._zoom_out).pack(side=tk.LEFT)
-        self.zoom_label = tk.Label(right, text="100%", bg=Theme.BG_SECONDARY, 
-                                   fg=Theme.FG_PRIMARY, width=6,
-                                   font=(Theme.FONT, Theme.FONT_SIZE))
-        self.zoom_label.pack(side=tk.LEFT, padx=5)
-        ToolButton(right, icon="+", tooltip="Zoom In", command=self._zoom_in).pack(side=tk.LEFT)
-        ToolButton(right, icon="⊡", tooltip="Fit", command=self._zoom_fit).pack(side=tk.LEFT, padx=(5,15))
+        # Zoom controls
+        zoom_frame = tk.Frame(nav_frame, bg=Theme.BG_SECONDARY)
+        zoom_frame.pack(side=tk.RIGHT, padx=(Theme.PAD_LG, 0))
         
-        # Page nav
-        ToolButton(right, icon="⏮", tooltip="First", command=self._first_page).pack(side=tk.LEFT)
-        ToolButton(right, icon="◀", tooltip="Previous", command=self._prev_page).pack(side=tk.LEFT)
+        ToolbarButton(zoom_frame, icon="−", command=self._zoom_out, tooltip="Zoom Out", size="small").pack(side=tk.LEFT)
+        self.zoom_label = tk.Label(zoom_frame, text="100%", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY,
+                                   width=6, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
+        self.zoom_label.pack(side=tk.LEFT, padx=Theme.PAD_SM)
+        ToolbarButton(zoom_frame, icon="+", command=self._zoom_in, tooltip="Zoom In", size="small").pack(side=tk.LEFT)
+        ToolbarButton(zoom_frame, icon="⊡", command=self._zoom_fit, tooltip="Fit Page", size="small").pack(side=tk.LEFT, padx=(Theme.PAD_SM, 0))
         
-        self.page_entry = tk.Entry(right, width=5, justify='center',
-                                   bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY,
-                                   insertbackground=Theme.FG_PRIMARY, relief=tk.FLAT,
-                                   font=(Theme.FONT, Theme.FONT_SIZE))
-        self.page_entry.pack(side=tk.LEFT, padx=5)
-        self.page_entry.bind("<Return>", self._goto_page)
+        # Page navigation
+        page_frame = tk.Frame(nav_frame, bg=Theme.BG_SECONDARY)
+        page_frame.pack(side=tk.RIGHT, padx=Theme.PAD_LG)
         
-        self.page_total = tk.Label(right, text="/ 0", bg=Theme.BG_SECONDARY,
-                                   fg=Theme.FG_SECONDARY, font=(Theme.FONT, Theme.FONT_SIZE))
+        ToolbarButton(page_frame, icon="⏮", command=self._first_page, tooltip="First Page", size="small").pack(side=tk.LEFT)
+        ToolbarButton(page_frame, icon="◀", command=self._prev_page, tooltip="Previous", size="small").pack(side=tk.LEFT)
+        
+        self.page_entry = ModernEntry(page_frame, width=5)
+        self.page_entry.pack(side=tk.LEFT, padx=Theme.PAD_SM, ipady=2)
+        self.page_entry.bind("<Return>", self._goto_page_entry)
+        
+        self.page_total = tk.Label(page_frame, text="/ 0", bg=Theme.BG_SECONDARY, fg=Theme.FG_SECONDARY,
+                                   font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
         self.page_total.pack(side=tk.LEFT)
         
-        ToolButton(right, icon="▶", tooltip="Next", command=self._next_page).pack(side=tk.LEFT, padx=(5,0))
-        ToolButton(right, icon="⏭", tooltip="Last", command=self._last_page).pack(side=tk.LEFT)
+        ToolbarButton(page_frame, icon="▶", command=self._next_page, tooltip="Next", size="small").pack(side=tk.LEFT, padx=(Theme.PAD_SM, 0))
+        ToolbarButton(page_frame, icon="⏭", command=self._last_page, tooltip="Last Page", size="small").pack(side=tk.LEFT)
     
-    def _add_separator(self, parent):
-        tk.Frame(parent, width=2, height=30, bg=Theme.BORDER).pack(side=tk.LEFT, padx=5, pady=10)
-    
-    def _build_left_sidebar(self, parent):
-        self.left_sidebar = tk.Frame(parent, bg=Theme.BG_SECONDARY, width=160)
-        self.left_sidebar.pack(side=tk.LEFT, fill=tk.Y)
-        self.left_sidebar.pack_propagate(False)
+    def _build_sidebar(self, parent):
+        self.sidebar = tk.Frame(parent, bg=Theme.BG_SECONDARY, width=Theme.SIDEBAR_WIDTH)
+        self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
+        self.sidebar.pack_propagate(False)
         
         # Sidebar tabs
-        tab_frame = tk.Frame(self.left_sidebar, bg=Theme.BG_TERTIARY)
-        tab_frame.pack(fill=tk.X)
-        
         self.sidebar_tabs = {}
-        for name, icon in [("Pages", "📄"), ("Bookmarks", "📑"), ("Comments", "💬")]:
-            btn = tk.Label(tab_frame, text=icon, bg=Theme.BG_TERTIARY, fg=Theme.FG_SECONDARY,
-                          font=(Theme.FONT, 14), padx=12, pady=6, cursor="hand2")
-            btn.pack(side=tk.LEFT)
-            btn.bind("<Button-1>", lambda e, n=name: self._show_sidebar_tab(n))
-            self.sidebar_tabs[name] = btn
+        tabs_data = [
+            ("pages", "📄", "Pages"),
+            ("bookmarks", "📑", "Bookmarks"),
+            ("comments", "💬", "Comments"),
+        ]
+        for key, icon, label in tabs_data:
+            tab = SidebarTab(self.sidebar, icon=icon, label=label,
+                            command=lambda k=key: self._show_sidebar_content(k))
+            tab.pack(fill=tk.X)
+            self.sidebar_tabs[key] = tab
         
-        # Content frames
-        self.sidebar_content = tk.Frame(self.left_sidebar, bg=Theme.BG_SECONDARY)
+        self.sidebar_tabs["pages"].set_active(True)
+        
+        # Separator
+        tk.Frame(self.sidebar, height=1, bg=Theme.BORDER_LIGHT).pack(fill=tk.X, pady=Theme.PAD_SM)
+        
+        # Content area
+        self.sidebar_content = tk.Frame(self.sidebar, bg=Theme.BG_SECONDARY)
         self.sidebar_content.pack(fill=tk.BOTH, expand=True)
         
         # Pages panel
-        self.pages_frame = tk.Frame(self.sidebar_content, bg=Theme.BG_SECONDARY)
-        self.thumb_canvas = tk.Canvas(self.pages_frame, bg=Theme.BG_SECONDARY, highlightthickness=0)
-        self.thumb_scroll = ttk.Scrollbar(self.pages_frame, orient=tk.VERTICAL, 
-                                          command=self.thumb_canvas.yview)
-        self.thumb_frame = tk.Frame(self.thumb_canvas, bg=Theme.BG_SECONDARY)
-        
-        self.thumb_canvas.configure(yscrollcommand=self.thumb_scroll.set)
-        self.thumb_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.thumb_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.thumb_canvas.create_window((0, 0), window=self.thumb_frame, anchor=tk.NW)
-        self.thumb_frame.bind("<Configure>", 
-            lambda e: self.thumb_canvas.configure(scrollregion=self.thumb_canvas.bbox("all")))
+        self._build_pages_panel()
         
         # Bookmarks panel
-        self.bookmarks_frame = tk.Frame(self.sidebar_content, bg=Theme.BG_SECONDARY)
-        self.bookmarks_tree = ttk.Treeview(self.bookmarks_frame, show="tree")
-        self.bookmarks_tree.pack(fill=tk.BOTH, expand=True)
+        self.bookmarks_panel = tk.Frame(self.sidebar_content, bg=Theme.BG_SECONDARY)
+        self.bookmarks_tree = ttk.Treeview(self.bookmarks_panel, show="tree")
+        self.bookmarks_tree.pack(fill=tk.BOTH, expand=True, padx=Theme.PAD_SM, pady=Theme.PAD_SM)
         self.bookmarks_tree.bind("<<TreeviewSelect>>", self._on_bookmark_select)
         
         # Comments panel
-        self.comments_frame = tk.Frame(self.sidebar_content, bg=Theme.BG_SECONDARY)
-        self.comments_list = tk.Listbox(self.comments_frame, bg=Theme.BG_TERTIARY,
-                                        fg=Theme.FG_PRIMARY, selectbackground=Theme.ACCENT,
-                                        font=(Theme.FONT, Theme.FONT_SMALL), relief=tk.FLAT)
-        self.comments_list.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.comments_panel = tk.Frame(self.sidebar_content, bg=Theme.BG_SECONDARY)
+        self.comments_list = tk.Listbox(self.comments_panel, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY,
+                                        selectbackground=Theme.ACCENT, relief=tk.FLAT,
+                                        font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
+        self.comments_list.pack(fill=tk.BOTH, expand=True, padx=Theme.PAD_SM, pady=Theme.PAD_SM)
         self.comments_list.bind("<<ListboxSelect>>", self._on_comment_select)
         
-        # Show pages by default
-        self._show_sidebar_tab("Pages")
+        self._show_sidebar_content("pages")
     
-    def _show_sidebar_tab(self, name: str):
-        # Update tab appearance
-        for n, btn in self.sidebar_tabs.items():
-            btn.configure(fg=Theme.ACCENT if n == name else Theme.FG_SECONDARY)
+    def _build_pages_panel(self):
+        self.pages_panel = tk.Frame(self.sidebar_content, bg=Theme.BG_SECONDARY)
         
-        # Show correct frame
-        for frame in [self.pages_frame, self.bookmarks_frame, self.comments_frame]:
-            frame.pack_forget()
+        # Scrollable thumbnail area
+        canvas = tk.Canvas(self.pages_panel, bg=Theme.BG_SECONDARY, highlightthickness=0, width=180)
+        scrollbar = ttk.Scrollbar(self.pages_panel, orient=tk.VERTICAL, command=canvas.yview)
+        self.thumb_frame = tk.Frame(canvas, bg=Theme.BG_SECONDARY)
         
-        if name == "Pages":
-            self.pages_frame.pack(fill=tk.BOTH, expand=True)
-        elif name == "Bookmarks":
-            self.bookmarks_frame.pack(fill=tk.BOTH, expand=True)
-            self._refresh_bookmarks()
-        elif name == "Comments":
-            self.comments_frame.pack(fill=tk.BOTH, expand=True)
-            self._refresh_comments()
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        self.thumb_canvas_window = canvas.create_window((0, 0), window=self.thumb_frame, anchor=tk.NW)
+        self.thumb_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+        
+        self.thumbnails = []
     
     def _build_canvas(self, parent):
-        canvas_frame = tk.Frame(parent, bg=Theme.BG_PRIMARY)
-        canvas_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        canvas_container = tk.Frame(parent, bg=Theme.BG_DARK)
+        canvas_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Search bar (hidden initially)
+        self.search_frame = tk.Frame(canvas_container, bg=Theme.BG_TERTIARY, height=44)
+        
+        tk.Label(self.search_frame, text="🔍", bg=Theme.BG_TERTIARY, fg=Theme.FG_MUTED).pack(side=tk.LEFT, padx=(Theme.PAD_MD, Theme.PAD_SM))
+        self.search_entry = ModernEntry(self.search_frame, width=30, placeholder="Find in document...")
+        self.search_entry.pack(side=tk.LEFT, padx=Theme.PAD_SM, pady=Theme.PAD_SM, ipady=3)
+        self.search_entry.bind("<Return>", lambda e: self._do_search())
+        
+        ModernButton(self.search_frame, icon="◀", width=32, command=lambda: self._nav_search(-1)).pack(side=tk.LEFT, padx=2)
+        ModernButton(self.search_frame, icon="▶", width=32, command=lambda: self._nav_search(1)).pack(side=tk.LEFT, padx=2)
+        
+        self.search_results_label = tk.Label(self.search_frame, text="", bg=Theme.BG_TERTIARY, fg=Theme.FG_SECONDARY,
+                                             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
+        self.search_results_label.pack(side=tk.LEFT, padx=Theme.PAD_MD)
+        
+        ModernButton(self.search_frame, icon="✕", width=32, command=self._hide_search).pack(side=tk.RIGHT, padx=Theme.PAD_MD)
+        
+        # Canvas
+        canvas_frame = tk.Frame(canvas_container, bg=Theme.BG_CANVAS)
+        canvas_frame.pack(fill=tk.BOTH, expand=True)
         
         self.h_scroll = ttk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL)
         self.v_scroll = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL)
         
-        self.canvas = tk.Canvas(canvas_frame, bg=Theme.BG_TERTIARY, highlightthickness=0,
+        self.canvas = tk.Canvas(canvas_frame, bg=Theme.BG_CANVAS, highlightthickness=0,
                                xscrollcommand=self.h_scroll.set, yscrollcommand=self.v_scroll.set)
         
         self.h_scroll.configure(command=self.canvas.xview)
@@ -1641,80 +1609,185 @@ class PDFEditorPro(tk.Tk):
         
         self.v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
         
-        # Bindings
+        # Canvas bindings
         self.canvas.bind("<Button-1>", self._canvas_click)
         self.canvas.bind("<B1-Motion>", self._canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self._canvas_release)
         self.canvas.bind("<MouseWheel>", self._canvas_scroll)
-        self.canvas.bind("<Button-4>", lambda e: self._canvas_scroll_linux(-1))
-        self.canvas.bind("<Button-5>", lambda e: self._canvas_scroll_linux(1))
         self.canvas.bind("<Button-3>", self._canvas_context)
     
-    def _build_status_bar(self):
-        status = tk.Frame(self, bg=Theme.BG_SECONDARY, height=26)
+    def _build_properties_panel(self, parent):
+        self.props_panel = tk.Frame(parent, bg=Theme.BG_SECONDARY, width=220)
+        self.props_panel.pack(side=tk.RIGHT, fill=tk.Y)
+        self.props_panel.pack_propagate(False)
+        
+        # Header
+        header = tk.Frame(self.props_panel, bg=Theme.BG_TERTIARY)
+        header.pack(fill=tk.X)
+        tk.Label(header, text="Properties", bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY,
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_MD, "bold"),
+                padx=Theme.PAD_MD, pady=Theme.PAD_MD).pack(anchor="w")
+        
+        self.props_content = tk.Frame(self.props_panel, bg=Theme.BG_SECONDARY)
+        self.props_content.pack(fill=tk.BOTH, expand=True, padx=Theme.PAD_MD, pady=Theme.PAD_MD)
+    
+    def _build_status_bar(self, parent):
+        status = tk.Frame(parent, bg=Theme.BG_PRIMARY, height=Theme.STATUSBAR_HEIGHT)
         status.pack(fill=tk.X, side=tk.BOTTOM)
         status.pack_propagate(False)
         
-        self.status_left = tk.Label(status, text="Ready", bg=Theme.BG_SECONDARY, 
-                                    fg=Theme.FG_SECONDARY, font=(Theme.FONT, Theme.FONT_SMALL))
-        self.status_left.pack(side=tk.LEFT, padx=10, pady=4)
+        self.status_left = tk.Label(status, text="Ready", bg=Theme.BG_PRIMARY, fg=Theme.FG_SECONDARY,
+                                    font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
+        self.status_left.pack(side=tk.LEFT, padx=Theme.PAD_MD, pady=Theme.PAD_SM)
         
-        self.status_right = tk.Label(status, text="", bg=Theme.BG_SECONDARY, 
-                                     fg=Theme.FG_SECONDARY, font=(Theme.FONT, Theme.FONT_SMALL))
-        self.status_right.pack(side=tk.RIGHT, padx=10, pady=4)
+        self.status_right = tk.Label(status, text="", bg=Theme.BG_PRIMARY, fg=Theme.FG_SECONDARY,
+                                     font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
+        self.status_right.pack(side=tk.RIGHT, padx=Theme.PAD_MD, pady=Theme.PAD_SM)
     
     def _bind_shortcuts(self):
-        self.bind("<Control-n>", lambda e: self._new_doc())
-        self.bind("<Control-o>", lambda e: self._open_doc())
-        self.bind("<Control-s>", lambda e: self._save_doc())
-        self.bind("<Control-S>", lambda e: self._save_as())
-        self.bind("<Control-w>", lambda e: self._close_tab())
-        self.bind("<Control-f>", lambda e: self._show_search())
-        self.bind("<Control-z>", lambda e: self._undo())
-        self.bind("<Control-y>", lambda e: self._redo())
-        self.bind("<Control-plus>", lambda e: self._zoom_in())
-        self.bind("<Control-minus>", lambda e: self._zoom_out())
-        self.bind("<Control-equal>", lambda e: self._zoom_in())
-        self.bind("<Control-0>", lambda e: self._zoom_fit())
-        self.bind("<Control-1>", lambda e: self._zoom_100())
-        self.bind("<Home>", lambda e: self._first_page())
-        self.bind("<End>", lambda e: self._last_page())
-        self.bind("<Prior>", lambda e: self._prev_page())
-        self.bind("<Next>", lambda e: self._next_page())
-        self.bind("<Escape>", lambda e: self._set_tool(ToolMode.SELECT))
-        self.bind("<Delete>", lambda e: self._delete_page())
+        shortcuts = [
+            ("<Control-n>", self._new_doc), ("<Control-o>", self._open_doc),
+            ("<Control-s>", self._save_doc), ("<Control-w>", self._close_tab),
+            ("<Control-f>", self._show_search),
+            ("<Control-plus>", self._zoom_in), ("<Control-minus>", self._zoom_out),
+            ("<Control-equal>", self._zoom_in), ("<Control-0>", self._zoom_fit),
+            ("<Home>", self._first_page), ("<End>", self._last_page),
+            ("<Prior>", self._prev_page), ("<Next>", self._next_page),
+            ("<Delete>", self._delete_page), ("<Escape>", lambda: self._set_tool(ToolMode.SELECT)),
+        ]
+        for key, cmd in shortcuts:
+            self.bind(key, lambda e, c=cmd: c())
+    
+    # =========================================================================
+    # SIDEBAR
+    # =========================================================================
+    
+    def _show_sidebar_content(self, key):
+        for k, tab in self.sidebar_tabs.items():
+            tab.set_active(k == key)
+        
+        for panel in [self.pages_panel, self.bookmarks_panel, self.comments_panel]:
+            panel.pack_forget()
+        
+        if key == "pages":
+            self.pages_panel.pack(fill=tk.BOTH, expand=True)
+        elif key == "bookmarks":
+            self.bookmarks_panel.pack(fill=tk.BOTH, expand=True)
+            self._refresh_bookmarks()
+        elif key == "comments":
+            self.comments_panel.pack(fill=tk.BOTH, expand=True)
+            self._refresh_comments()
+        
+        self.sidebar_mode = key
+    
+    def _refresh_thumbnails(self):
+        for t in self.thumbnails:
+            t.destroy()
+        self.thumbnails = []
+        
+        if not self.doc:
+            return
+        
+        for i in range(self.doc.page_count):
+            self._create_thumbnail(i)
+    
+    def _create_thumbnail(self, page_num):
+        img = self.doc.render_page(page_num, zoom=0.15)
+        if not img:
+            return
+        
+        img.thumbnail((120, 160), Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(img)
+        
+        frame = tk.Frame(self.thumb_frame, bg=Theme.BG_SECONDARY, cursor="hand2")
+        frame.pack(pady=Theme.PAD_SM, padx=Theme.PAD_SM)
+        
+        canvas = tk.Canvas(frame, width=130, height=170, bg=Theme.BG_SECONDARY, highlightthickness=0)
+        canvas.pack()
+        
+        # Thumbnail with border
+        border_color = Theme.ACCENT if page_num == self.current_page else Theme.BORDER_LIGHT
+        canvas.create_rectangle(9, 9, 121, 151, fill="white", outline=border_color, width=2)
+        canvas.create_image(65, 80, image=photo)
+        canvas.create_text(65, 162, text=str(page_num + 1), fill=Theme.FG_SECONDARY,
+                          font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
+        
+        canvas.image = photo
+        canvas.bind("<Button-1>", lambda e, p=page_num: self._goto_page(p))
+        canvas.bind("<Button-3>", lambda e, p=page_num: self._page_context(e, p))
+        
+        self.thumbnails.append(frame)
+    
+    def _update_thumbnail_selection(self):
+        for i, thumb in enumerate(self.thumbnails):
+            canvas = thumb.winfo_children()[0]
+            border_color = Theme.ACCENT if i == self.current_page else Theme.BORDER_LIGHT
+            canvas.itemconfigure(1, outline=border_color)
+    
+    def _refresh_bookmarks(self):
+        self.bookmarks_tree.delete(*self.bookmarks_tree.get_children())
+        if not self.doc:
+            return
+        
+        bookmarks = self.doc.get_bookmarks()
+        parents = {0: ""}
+        for level, title, page in bookmarks:
+            parent = parents.get(level - 1, "")
+            item = self.bookmarks_tree.insert(parent, "end", text=f"{title} ({page + 1})", values=(page,))
+            parents[level] = item
+    
+    def _refresh_comments(self):
+        self.comments_list.delete(0, tk.END)
+        if not self.doc:
+            return
+        for c in self.doc.comments:
+            preview = c.content[:35] + "..." if len(c.content) > 35 else c.content
+            self.comments_list.insert(tk.END, f"p.{c.page + 1}: {preview}")
+    
+    def _on_bookmark_select(self, e):
+        sel = self.bookmarks_tree.selection()
+        if sel:
+            item = self.bookmarks_tree.item(sel[0])
+            if item['values']:
+                self._goto_page(item['values'][0])
+    
+    def _on_comment_select(self, e):
+        sel = self.comments_list.curselection()
+        if sel and self.doc and sel[0] < len(self.doc.comments):
+            self._goto_page(self.doc.comments[sel[0]].page)
     
     # =========================================================================
     # DOCUMENT MANAGEMENT
     # =========================================================================
     
     def _new_doc(self):
-        doc_id = f"doc_{len(self.documents)}"
+        doc_id = f"doc_{len(self.documents)}_{datetime.now().timestamp()}"
         doc = PDFDocument()
         doc.create_new()
         self.documents[doc_id] = doc
-        self.tab_bar.add_tab(doc_id, "Untitled")
+        self._add_tab(doc_id, "Untitled")
         self._switch_to_doc(doc_id)
+        self._status("New document created")
     
-    def _open_doc(self, filepath: str = None):
+    def _open_doc(self, filepath=None):
         if not filepath:
-            filepath = filedialog.askopenfilename(
-                filetypes=[("PDF Files", "*.pdf"), ("All Files", "*.*")])
+            filepath = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf"), ("All Files", "*.*")])
         if not filepath:
             return
         
-        doc_id = f"doc_{len(self.documents)}"
+        doc_id = f"doc_{len(self.documents)}_{datetime.now().timestamp()}"
         doc = PDFDocument()
+        
         if doc.open(filepath):
             self.documents[doc_id] = doc
-            self.tab_bar.add_tab(doc_id, doc.filename)
+            self._add_tab(doc_id, doc.filename)
             self._switch_to_doc(doc_id)
             self._add_recent(filepath)
             self._status(f"Opened: {doc.filename}")
         else:
-            messagebox.showerror("Error", "Failed to open PDF.")
+            messagebox.showerror("Error", "Failed to open PDF")
     
     def _save_doc(self):
         if not self.doc:
@@ -1724,20 +1797,18 @@ class PDFEditorPro(tk.Tk):
             return
         if self.doc.save():
             self._status("Saved")
-            self._update_title()
+            self._update_tab_title()
         else:
-            messagebox.showerror("Error", "Failed to save.")
+            messagebox.showerror("Error", "Failed to save")
     
     def _save_as(self):
         if not self.doc:
             return
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".pdf",
-            filetypes=[("PDF Files", "*.pdf")])
+        filepath = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
         if filepath:
             if self.doc.save(filepath):
                 self._status(f"Saved: {self.doc.filename}")
-                self._update_title()
+                self._update_tab_title()
                 self._add_recent(filepath)
     
     def _close_tab(self):
@@ -1745,50 +1816,61 @@ class PDFEditorPro(tk.Tk):
             return
         doc = self.doc
         if doc and doc.is_modified:
-            r = messagebox.askyesnocancel("Save?", "Save changes before closing?")
+            r = messagebox.askyesnocancel("Save Changes?", f"Save changes to {doc.filename}?")
             if r is None:
                 return
             if r:
                 self._save_doc()
         
-        self.tab_bar.remove_tab(self.active_doc_id)
+        self._remove_tab(self.active_doc_id)
         if self.active_doc_id in self.documents:
             self.documents[self.active_doc_id].close()
             del self.documents[self.active_doc_id]
         
-        # Switch to another tab
-        if self.tab_bar.tabs:
-            self._switch_to_doc(list(self.tab_bar.tabs.keys())[0])
+        if self.tabs:
+            self._switch_to_doc(list(self.tabs.keys())[0])
         else:
             self.active_doc_id = None
             self.current_page = 0
             self._show_welcome()
     
-    def _switch_to_doc(self, doc_id: str):
+    def _add_tab(self, doc_id, title):
+        tab = TabButton(self.tab_bar, title=title, doc_id=doc_id,
+                       on_select=self._switch_to_doc, on_close=self._close_tab_by_id)
+        tab.pack(side=tk.LEFT, padx=1)
+        self.tabs[doc_id] = tab
+    
+    def _remove_tab(self, doc_id):
+        if doc_id in self.tabs:
+            self.tabs[doc_id].destroy()
+            del self.tabs[doc_id]
+    
+    def _close_tab_by_id(self, doc_id):
+        old_active = self.active_doc_id
+        self.active_doc_id = doc_id
+        self._close_tab()
+        if self.tabs and old_active != doc_id:
+            self._switch_to_doc(old_active)
+    
+    def _switch_to_doc(self, doc_id):
         if doc_id not in self.documents:
             return
         self.active_doc_id = doc_id
         self.current_page = 0
         self.zoom = 1.0
-        self.tab_bar.set_active(doc_id)
+        
+        for did, tab in self.tabs.items():
+            tab.set_active(did == doc_id)
+        
         self._refresh_all()
     
-    def _on_tab_select(self, doc_id: str):
-        self._switch_to_doc(doc_id)
+    def _update_tab_title(self):
+        if self.active_doc_id in self.tabs and self.doc:
+            title = self.doc.filename + (" *" if self.doc.is_modified else "")
+            self.tabs[self.active_doc_id].set_title(title)
+            self.title(f"PDF Editor Pro - {title}")
     
-    def _on_tab_close(self, doc_id: str):
-        self.active_doc_id = doc_id
-        self._close_tab()
-    
-    def _update_title(self):
-        if self.doc:
-            mod = " *" if self.doc.is_modified else ""
-            self.tab_bar.update_title(self.active_doc_id, self.doc.filename + mod)
-            self.title(f"PDF Editor Pro - {self.doc.filename}{mod}")
-        else:
-            self.title("PDF Editor Pro")
-    
-    def _add_recent(self, filepath: str):
+    def _add_recent(self, filepath):
         recent = self.config_data.get("recent_files", [])
         if filepath in recent:
             recent.remove(filepath)
@@ -1797,7 +1879,7 @@ class PDFEditorPro(tk.Tk):
         Config.save(self.config_data)
     
     # =========================================================================
-    # VIEW
+    # VIEW & RENDERING
     # =========================================================================
     
     def _refresh_all(self):
@@ -1805,10 +1887,11 @@ class PDFEditorPro(tk.Tk):
         self._refresh_thumbnails()
         self._refresh_bookmarks()
         self._refresh_comments()
+        self._update_properties()
         self._update_ui()
     
     def _render_page(self):
-        if not self.doc or not self.doc.doc:
+        if not self.doc:
             self._show_welcome()
             return
         
@@ -1827,117 +1910,64 @@ class PDFEditorPro(tk.Tk):
         y = max(ch // 2, ih // 2)
         
         # Shadow
-        self.canvas.create_rectangle(x - iw//2 + 4, y - ih//2 + 4,
-                                     x + iw//2 + 4, y + ih//2 + 4,
-                                     fill="#000000", outline="")
-        # Background
+        self.canvas.create_rectangle(x - iw//2 + 6, y - ih//2 + 6,
+                                     x + iw//2 + 6, y + ih//2 + 6,
+                                     fill=Theme.SHADOW, outline="")
+        
+        # Page background
         self.canvas.create_rectangle(x - iw//2, y - ih//2, x + iw//2, y + ih//2,
-                                     fill="#ffffff", outline=Theme.BORDER)
-        # Image
+                                     fill="white", outline=Theme.BORDER_DARK)
+        
+        # Page image
         self.canvas.create_image(x, y, image=self.page_image)
         
-        self.img_offset_x = x - iw // 2
-        self.img_offset_y = y - ih // 2
+        self.img_offset = (x - iw // 2, y - ih // 2)
         
         # Draw comments
-        for comment in self.doc.comments:
-            if comment.page == self.current_page:
-                cx = self.img_offset_x + comment.x * self.zoom
-                cy = self.img_offset_y + comment.y * self.zoom
-                self.canvas.create_polygon(cx, cy, cx+15, cy, cx+15, cy+18, cx+8, cy+12, cx, cy+12,
-                                          fill=comment.color, outline=Theme.BORDER)
+        for c in self.doc.comments:
+            if c.page == self.current_page:
+                cx = self.img_offset[0] + c.x * self.zoom
+                cy = self.img_offset[1] + c.y * self.zoom
+                self.canvas.create_polygon(cx, cy, cx+18, cy, cx+18, cy+22,
+                                          cx+9, cy+15, cx, cy+15,
+                                          fill=c.color, outline=Theme.BORDER_DARK)
         
         # Search highlights
-        for hl in self.search_highlights:
-            if hl.page == self.current_page:
-                r = hl.rect
-                x1 = self.img_offset_x + r[0] * self.zoom
-                y1 = self.img_offset_y + r[1] * self.zoom
-                x2 = self.img_offset_x + r[2] * self.zoom
-                y2 = self.img_offset_y + r[3] * self.zoom
-                self.canvas.create_rectangle(x1, y1, x2, y2, fill="#ffff00", 
+        for sr in self.search_results:
+            if sr.page == self.current_page:
+                r = sr.rect
+                x1 = self.img_offset[0] + r[0] * self.zoom
+                y1 = self.img_offset[1] + r[1] * self.zoom
+                x2 = self.img_offset[0] + r[2] * self.zoom
+                y2 = self.img_offset[1] + r[3] * self.zoom
+                self.canvas.create_rectangle(x1, y1, x2, y2, fill=Theme.HIGHLIGHT,
                                             stipple="gray50", outline="")
         
-        self.canvas.configure(scrollregion=(0, 0, max(cw, iw+50), max(ch, ih+50)))
-        self.props_panel.show_page_info(self.doc, self.current_page)
+        self.canvas.configure(scrollregion=(0, 0, max(cw, iw+100), max(ch, ih+100)))
     
-    def _refresh_thumbnails(self):
-        for t in self.thumbnails:
-            t.destroy()
-        self.thumbnails = []
+    def _show_welcome(self):
+        self.canvas.delete("all")
+        cx, cy = 500, 350
         
-        if not self.doc or not self.doc.doc:
-            return
+        self.canvas.create_text(cx, cy - 80, text="📄", font=(Theme.FONT_FAMILY, 64), fill=Theme.ACCENT)
+        self.canvas.create_text(cx, cy, text="PDF Editor Pro",
+                               font=(Theme.FONT_FAMILY, 32, "bold"), fill=Theme.FG_PRIMARY)
+        self.canvas.create_text(cx, cy + 45, text="Professional PDF Editing Suite",
+                               font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_LG), fill=Theme.FG_SECONDARY)
         
-        for i in range(self.doc.page_count):
-            img = self.doc.render_page(i, 0.15)
-            if img:
-                t = PageThumbnail(self.thumb_frame, i, img, self._on_thumb_click, self._thumb_context)
-                t.pack(pady=4, padx=5)
-                t.set_selected(i == self.current_page)
-                self.thumbnails.append(t)
-    
-    def _refresh_bookmarks(self):
-        self.bookmarks_tree.delete(*self.bookmarks_tree.get_children())
-        if not self.doc:
-            return
-        
-        bookmarks = self.doc.get_bookmarks()
-        parents = {0: ""}
-        
-        for level, title, page in bookmarks:
-            parent = parents.get(level - 1, "")
-            item = self.bookmarks_tree.insert(parent, "end", text=f"{title} (p.{page+1})", 
-                                              values=(page,))
-            parents[level] = item
-    
-    def _refresh_comments(self):
-        self.comments_list.delete(0, tk.END)
-        if not self.doc:
-            return
-        
-        for c in self.doc.comments:
-            preview = c.content[:30] + "..." if len(c.content) > 30 else c.content
-            self.comments_list.insert(tk.END, f"p.{c.page+1}: {preview}")
-    
-    def _on_thumb_click(self, page_num: int):
-        self.current_page = page_num
-        self._render_page()
-        for i, t in enumerate(self.thumbnails):
-            t.set_selected(i == page_num)
-        self._update_ui()
-    
-    def _thumb_context(self, event, page_num: int):
-        menu = tk.Menu(self, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
-        menu.add_command(label="Insert Page Before", command=lambda: self._insert_page(page_num))
-        menu.add_command(label="Insert Page After", command=lambda: self._insert_page(page_num + 1))
-        menu.add_separator()
-        menu.add_command(label="Rotate Clockwise", command=lambda: self._rotate(page_num, 90))
-        menu.add_command(label="Rotate Counter-Clockwise", command=lambda: self._rotate(page_num, -90))
-        menu.add_separator()
-        menu.add_command(label="Delete Page", command=lambda: self._delete_page(page_num))
-        menu.add_separator()
-        menu.add_command(label="Extract Page...", command=lambda: self._extract_page(page_num))
-        menu.tk_popup(event.x_root, event.y_root)
-    
-    def _on_bookmark_select(self, event):
-        sel = self.bookmarks_tree.selection()
-        if sel:
-            item = self.bookmarks_tree.item(sel[0])
-            if item['values']:
-                self.current_page = item['values'][0]
-                self._render_page()
-                self._update_ui()
-    
-    def _on_comment_select(self, event):
-        sel = self.comments_list.curselection()
-        if sel and self.doc:
-            idx = sel[0]
-            if idx < len(self.doc.comments):
-                c = self.doc.comments[idx]
-                self.current_page = c.page
-                self._render_page()
-                self._update_ui()
+        recent = self.config_data.get("recent_files", [])[:5]
+        if recent:
+            self.canvas.create_text(cx, cy + 110, text="Recent Files",
+                                   font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_MD, "bold"), fill=Theme.FG_PRIMARY)
+            for i, path in enumerate(recent):
+                y = cy + 140 + i * 26
+                name = os.path.basename(path)
+                tag = f"recent_{i}"
+                self.canvas.create_text(cx, y, text=name, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM),
+                                       fill=Theme.ACCENT_LIGHT, tags=tag)
+                self.canvas.tag_bind(tag, "<Button-1>", lambda e, p=path: self._open_doc(p))
+                self.canvas.tag_bind(tag, "<Enter>", lambda e, t=tag: self.canvas.itemconfigure(t, fill=Theme.FG_PRIMARY))
+                self.canvas.tag_bind(tag, "<Leave>", lambda e, t=tag: self.canvas.itemconfigure(t, fill=Theme.ACCENT_LIGHT))
     
     def _update_ui(self):
         self.page_entry.delete(0, tk.END)
@@ -1946,79 +1976,83 @@ class PDFEditorPro(tk.Tk):
         self.zoom_label.configure(text=f"{int(self.zoom * 100)}%")
         
         if self.doc:
-            mod = " (modified)" if self.doc.is_modified else ""
+            mod = " *" if self.doc.is_modified else ""
             self.status_right.configure(text=f"Page {self.current_page + 1} of {self.doc.page_count}{mod}")
-        
-        self._update_title()
+            self._update_tab_title()
+        else:
+            self.title("PDF Editor Pro")
     
-    def _show_welcome(self):
-        self.canvas.delete("all")
-        cx, cy = 400, 300
+    def _update_properties(self):
+        for w in self.props_content.winfo_children():
+            w.destroy()
         
-        self.canvas.create_text(cx, cy - 50, text="📄", font=(Theme.FONT, 48), fill=Theme.ACCENT)
-        self.canvas.create_text(cx, cy, text="PDF Editor Pro", 
-                               font=(Theme.FONT, 24, "bold"), fill=Theme.FG_PRIMARY)
-        self.canvas.create_text(cx, cy + 40, text="Open a PDF or create a new document",
-                               font=(Theme.FONT, Theme.FONT_SIZE), fill=Theme.FG_SECONDARY)
+        if not self.doc:
+            return
         
-        # Recent files
-        recent = self.config_data.get("recent_files", [])[:5]
-        if recent:
-            self.canvas.create_text(cx, cy + 100, text="Recent Files:",
-                                   font=(Theme.FONT, Theme.FONT_SIZE, "bold"), fill=Theme.FG_PRIMARY)
-            for i, path in enumerate(recent):
-                name = os.path.basename(path)
-                y = cy + 125 + i * 22
-                txt_id = self.canvas.create_text(cx, y, text=name, 
-                                                font=(Theme.FONT, Theme.FONT_SIZE),
-                                                fill=Theme.ACCENT, tags=f"recent_{i}")
-                self.canvas.tag_bind(f"recent_{i}", "<Button-1>", 
-                                    lambda e, p=path: self._open_doc(p))
-                self.canvas.tag_bind(f"recent_{i}", "<Enter>",
-                                    lambda e, t=txt_id: self.canvas.itemconfig(t, fill=Theme.ACCENT_HOVER))
-                self.canvas.tag_bind(f"recent_{i}", "<Leave>",
-                                    lambda e, t=txt_id: self.canvas.itemconfig(t, fill=Theme.ACCENT))
+        page = self.doc.get_page(self.current_page)
+        if not page:
+            return
+        
+        # Page info
+        tk.Label(self.props_content, text="Page", bg=Theme.BG_SECONDARY, fg=Theme.ACCENT_LIGHT,
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM, "bold")).pack(anchor="w", pady=(0, Theme.PAD_SM))
+        
+        info = [
+            ("Number", str(self.current_page + 1)),
+            ("Width", f"{page.rect.width:.0f} pt"),
+            ("Height", f"{page.rect.height:.0f} pt"),
+            ("Rotation", f"{page.rotation}°"),
+        ]
+        
+        for label, value in info:
+            row = tk.Frame(self.props_content, bg=Theme.BG_SECONDARY)
+            row.pack(fill=tk.X, pady=2)
+            tk.Label(row, text=label, bg=Theme.BG_SECONDARY, fg=Theme.FG_MUTED,
+                    font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM), width=10, anchor="w").pack(side=tk.LEFT)
+            tk.Label(row, text=value, bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY,
+                    font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM)).pack(side=tk.LEFT)
     
-    def _status(self, msg: str):
+    def _status(self, msg):
         self.status_left.configure(text=msg)
     
     # =========================================================================
-    # NAVIGATION & ZOOM
+    # NAVIGATION
     # =========================================================================
     
     def _first_page(self):
-        if self.doc and self.doc.page_count:
-            self.current_page = 0
-            self._render_page()
-            self._update_ui()
+        if self.doc:
+            self._goto_page(0)
     
     def _prev_page(self):
         if self.doc and self.current_page > 0:
-            self.current_page -= 1
-            self._render_page()
-            self._update_ui()
+            self._goto_page(self.current_page - 1)
     
     def _next_page(self):
         if self.doc and self.current_page < self.doc.page_count - 1:
-            self.current_page += 1
-            self._render_page()
-            self._update_ui()
+            self._goto_page(self.current_page + 1)
     
     def _last_page(self):
-        if self.doc and self.doc.page_count:
-            self.current_page = self.doc.page_count - 1
+        if self.doc:
+            self._goto_page(self.doc.page_count - 1)
+    
+    def _goto_page(self, page_num):
+        if self.doc and 0 <= page_num < self.doc.page_count:
+            self.current_page = page_num
             self._render_page()
+            self._update_thumbnail_selection()
+            self._update_properties()
             self._update_ui()
     
-    def _goto_page(self, event=None):
+    def _goto_page_entry(self, e=None):
         try:
             p = int(self.page_entry.get()) - 1
-            if self.doc and 0 <= p < self.doc.page_count:
-                self.current_page = p
-                self._render_page()
-                self._update_ui()
+            self._goto_page(p)
         except:
             pass
+    
+    # =========================================================================
+    # ZOOM
+    # =========================================================================
     
     def _zoom_in(self):
         self.zoom = min(Config.MAX_ZOOM, self.zoom * 1.25)
@@ -2039,28 +2073,25 @@ class PDFEditorPro(tk.Tk):
         if not self.doc:
             return
         pw, ph = self.doc.get_page_size(self.current_page)
-        cw = self.canvas.winfo_width() - 40
-        ch = self.canvas.winfo_height() - 40
-        self.zoom = min(cw / pw, ch / ph)
+        cw = self.canvas.winfo_width() - 60
+        ch = self.canvas.winfo_height() - 60
+        self.zoom = min(cw / pw, ch / ph, Config.MAX_ZOOM)
         self._render_page()
         self._update_ui()
     
-    def _canvas_scroll(self, event):
-        if event.state & 0x4:  # Ctrl
-            self._zoom_in() if event.delta > 0 else self._zoom_out()
+    def _canvas_scroll(self, e):
+        if e.state & 0x4:  # Ctrl
+            self._zoom_in() if e.delta > 0 else self._zoom_out()
         else:
-            self.canvas.yview_scroll(-1 * (event.delta // 120), "units")
-    
-    def _canvas_scroll_linux(self, direction):
-        self.canvas.yview_scroll(direction * 3, "units")
+            self.canvas.yview_scroll(-1 * (e.delta // 120), "units")
     
     # =========================================================================
     # TOOLS
     # =========================================================================
     
-    def _set_tool(self, mode: ToolMode):
+    def _set_tool(self, mode):
         self.tool_mode = mode
-        for m, btn in self.tool_btns.items():
+        for m, btn in self.tool_buttons.items():
             btn.set_active(m == mode)
         
         cursors = {
@@ -2068,114 +2099,98 @@ class PDFEditorPro(tk.Tk):
             ToolMode.STICKY_NOTE: "plus", ToolMode.DRAW: "pencil", ToolMode.CROP: "cross",
         }
         self.canvas.configure(cursor=cursors.get(mode, "cross"))
-        
-        if mode == ToolMode.IMAGE:
-            self._add_image_dialog()
-            self._set_tool(ToolMode.SELECT)
-        
         self._status(f"Tool: {mode.name.replace('_', ' ').title()}")
     
-    def _pick_color(self):
-        color = colorchooser.askcolor(color=self._rgb_to_hex(self.draw_color))
-        if color[0]:
-            self.draw_color = tuple(int(c) for c in color[0])
-    
-    def _rgb_to_hex(self, rgb):
-        return f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
-    
     def _canvas_to_pdf(self, cx, cy):
-        if not hasattr(self, 'img_offset_x'):
+        if not hasattr(self, 'img_offset'):
             return 0, 0
-        return (cx - self.img_offset_x) / self.zoom, (cy - self.img_offset_y) / self.zoom
+        return (cx - self.img_offset[0]) / self.zoom, (cy - self.img_offset[1]) / self.zoom
     
-    def _canvas_click(self, event):
+    def _canvas_click(self, e):
         if not self.doc:
             return
         
-        cx = self.canvas.canvasx(event.x)
-        cy = self.canvas.canvasy(event.y)
+        cx = self.canvas.canvasx(e.x)
+        cy = self.canvas.canvasy(e.y)
         self.drag_start = (cx, cy)
         self.draw_points = [(cx, cy)]
         
         px, py = self._canvas_to_pdf(cx, cy)
         
         if self.tool_mode == ToolMode.TEXT:
-            self._add_text_dialog(px, py)
+            self._text_dialog(px, py)
         elif self.tool_mode == ToolMode.STICKY_NOTE:
-            self._add_comment_dialog(px, py)
+            self._comment_dialog(px, py)
         elif self.tool_mode == ToolMode.STAMP and self.selected_stamp:
             self.doc.add_stamp(self.current_page, px, py, self.selected_stamp)
             self._render_page()
-            self._status(f"Stamp placed")
-        elif self.tool_mode == ToolMode.PAN:
-            self._pan_start = (cx, cy)
     
-    def _canvas_drag(self, event):
+    def _canvas_drag(self, e):
         if not self.doc or not self.drag_start:
             return
         
-        cx = self.canvas.canvasx(event.x)
-        cy = self.canvas.canvasy(event.y)
+        cx = self.canvas.canvasx(e.x)
+        cy = self.canvas.canvasy(e.y)
         
         if self.tool_mode == ToolMode.PAN:
             dx = cx - self.drag_start[0]
             dy = cy - self.drag_start[1]
-            self.canvas.xview_scroll(int(-dx/10), "units")
-            self.canvas.yview_scroll(int(-dy/10), "units")
+            self.canvas.xview_scroll(int(-dx/15), "units")
+            self.canvas.yview_scroll(int(-dy/15), "units")
         elif self.tool_mode == ToolMode.DRAW:
             self.draw_points.append((cx, cy))
             if len(self.draw_points) >= 2:
                 self.canvas.create_line(self.draw_points[-2][0], self.draw_points[-2][1],
-                                       cx, cy, fill=self._rgb_to_hex(self.draw_color),
-                                       width=2, tags="temp")
-        elif self.tool_mode in (ToolMode.RECTANGLE, ToolMode.CIRCLE, ToolMode.HIGHLIGHT,
-                               ToolMode.UNDERLINE, ToolMode.STRIKETHROUGH, ToolMode.REDACT,
-                               ToolMode.ARROW, ToolMode.CROP):
+                                       cx, cy, fill="#000000", width=2, tags="temp")
+        elif self.tool_mode in (ToolMode.RECTANGLE, ToolMode.CIRCLE, ToolMode.LINE,
+                               ToolMode.ARROW, ToolMode.HIGHLIGHT, ToolMode.UNDERLINE,
+                               ToolMode.STRIKETHROUGH, ToolMode.REDACT, ToolMode.CROP):
             self.canvas.delete("temp")
             x1, y1 = self.drag_start
-            color = self._rgb_to_hex(self.draw_color)
             
             if self.tool_mode == ToolMode.RECTANGLE:
-                self.canvas.create_rectangle(x1, y1, cx, cy, outline=color, width=2, tags="temp")
+                self.canvas.create_rectangle(x1, y1, cx, cy, outline="#000000", width=2, tags="temp")
             elif self.tool_mode == ToolMode.CIRCLE:
-                self.canvas.create_oval(x1, y1, cx, cy, outline=color, width=2, tags="temp")
+                self.canvas.create_oval(x1, y1, cx, cy, outline="#000000", width=2, tags="temp")
+            elif self.tool_mode == ToolMode.LINE:
+                self.canvas.create_line(x1, y1, cx, cy, fill="#000000", width=2, tags="temp")
             elif self.tool_mode == ToolMode.ARROW:
-                self.canvas.create_line(x1, y1, cx, cy, fill=color, width=2, arrow=tk.LAST, tags="temp")
+                self.canvas.create_line(x1, y1, cx, cy, fill="#000000", width=2, arrow=tk.LAST, tags="temp")
             elif self.tool_mode in (ToolMode.HIGHLIGHT, ToolMode.UNDERLINE, ToolMode.STRIKETHROUGH):
-                self.canvas.create_rectangle(x1, y1, cx, cy, fill="#ffff00", stipple="gray50",
-                                           outline="", tags="temp")
+                self.canvas.create_rectangle(x1, y1, cx, cy, fill=Theme.HIGHLIGHT, stipple="gray50", outline="", tags="temp")
             elif self.tool_mode == ToolMode.REDACT:
                 self.canvas.create_rectangle(x1, y1, cx, cy, fill="black", outline="", tags="temp")
             elif self.tool_mode == ToolMode.CROP:
-                self.canvas.create_rectangle(x1, y1, cx, cy, outline=Theme.ACCENT, width=2,
-                                           dash=(4, 4), tags="temp")
+                self.canvas.create_rectangle(x1, y1, cx, cy, outline=Theme.ACCENT, width=2, dash=(4, 4), tags="temp")
     
-    def _canvas_release(self, event):
+    def _canvas_release(self, e):
         if not self.doc or not self.drag_start:
             return
         
-        cx = self.canvas.canvasx(event.x)
-        cy = self.canvas.canvasy(event.y)
+        cx = self.canvas.canvasx(e.x)
+        cy = self.canvas.canvasy(e.y)
         
         x1, y1 = self._canvas_to_pdf(*self.drag_start)
         x2, y2 = self._canvas_to_pdf(cx, cy)
         rect = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
         
-        color = tuple(c/255 for c in self.draw_color)
         self.canvas.delete("temp")
         
         if self.tool_mode == ToolMode.DRAW and len(self.draw_points) >= 2:
             pts = [self._canvas_to_pdf(p[0], p[1]) for p in self.draw_points]
-            self.doc.add_freehand(self.current_page, pts, color)
+            self.doc.add_freehand(self.current_page, pts)
             self._render_page()
         elif self.tool_mode == ToolMode.RECTANGLE:
-            self.doc.add_rect(self.current_page, rect, color)
+            self.doc.add_rect(self.current_page, rect)
             self._render_page()
         elif self.tool_mode == ToolMode.CIRCLE:
-            self.doc.add_circle(self.current_page, rect, color)
+            self.doc.add_circle(self.current_page, rect)
+            self._render_page()
+        elif self.tool_mode == ToolMode.LINE:
+            self.doc.add_line(self.current_page, (x1, y1), (x2, y2))
             self._render_page()
         elif self.tool_mode == ToolMode.ARROW:
-            self.doc.add_arrow(self.current_page, (x1, y1), (x2, y2), color)
+            self.doc.add_arrow(self.current_page, (x1, y1), (x2, y2))
             self._render_page()
         elif self.tool_mode == ToolMode.HIGHLIGHT:
             self.doc.add_highlight(self.current_page, rect)
@@ -2187,7 +2202,7 @@ class PDFEditorPro(tk.Tk):
             self.doc.add_strikethrough(self.current_page, rect)
             self._render_page()
         elif self.tool_mode == ToolMode.REDACT:
-            if messagebox.askyesno("Redact", "Permanently black out this area?"):
+            if messagebox.askyesno("Redact", "Permanently redact this area?"):
                 self.doc.redact_area(self.current_page, rect)
                 self._render_page()
         elif self.tool_mode == ToolMode.CROP:
@@ -2199,74 +2214,90 @@ class PDFEditorPro(tk.Tk):
         self.draw_points = []
         self._update_ui()
     
-    def _canvas_context(self, event):
+    def _canvas_context(self, e):
         if not self.doc:
             return
-        menu = tk.Menu(self, tearoff=0, bg=Theme.BG_TERTIARY, fg=Theme.FG_PRIMARY)
-        menu.add_command(label="Add Text Here", command=lambda: self._add_text_dialog(
-            *self._canvas_to_pdf(self.canvas.canvasx(event.x), self.canvas.canvasy(event.y))))
-        menu.add_command(label="Add Comment Here", command=lambda: self._add_comment_dialog(
-            *self._canvas_to_pdf(self.canvas.canvasx(event.x), self.canvas.canvasy(event.y))))
+        px, py = self._canvas_to_pdf(self.canvas.canvasx(e.x), self.canvas.canvasy(e.y))
+        
+        menu = tk.Menu(self, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY)
+        menu.add_command(label="Add Text", command=lambda: self._text_dialog(px, py))
+        menu.add_command(label="Add Comment", command=lambda: self._comment_dialog(px, py))
         menu.add_separator()
-        menu.add_command(label="Copy Page Text", command=self._copy_page_text)
-        menu.tk_popup(event.x_root, event.y_root)
+        menu.add_command(label="Copy Page Text", command=self._copy_text)
+        menu.tk_popup(e.x_root, e.y_root)
+    
+    def _page_context(self, e, page_num):
+        menu = tk.Menu(self, tearoff=0, bg=Theme.BG_ELEVATED, fg=Theme.FG_PRIMARY)
+        menu.add_command(label="Insert Page Before", command=lambda: self._insert_page_at(page_num))
+        menu.add_command(label="Insert Page After", command=lambda: self._insert_page_at(page_num + 1))
+        menu.add_command(label="Duplicate", command=lambda: self._duplicate_page_at(page_num))
+        menu.add_separator()
+        menu.add_command(label="Rotate CW", command=lambda: self._rotate_page(page_num, 90))
+        menu.add_command(label="Rotate CCW", command=lambda: self._rotate_page(page_num, -90))
+        menu.add_separator()
+        menu.add_command(label="Delete", command=lambda: self._delete_page_at(page_num))
+        menu.tk_popup(e.x_root, e.y_root)
     
     # =========================================================================
     # DIALOGS
     # =========================================================================
     
-    def _add_text_dialog(self, x: float, y: float):
+    def _create_dialog(self, title, width=400, height=300):
         dialog = tk.Toplevel(self)
-        dialog.title("Add Text")
-        dialog.geometry("400x200")
+        dialog.title(title)
+        dialog.geometry(f"{width}x{height}")
         dialog.configure(bg=Theme.BG_SECONDARY)
         dialog.transient(self)
         dialog.grab_set()
         
-        tk.Label(dialog, text="Enter text:", bg=Theme.BG_SECONDARY, 
-                fg=Theme.FG_PRIMARY).pack(pady=10)
+        # Center on parent
+        dialog.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() - width) // 2
+        y = self.winfo_y() + (self.winfo_height() - height) // 2
+        dialog.geometry(f"+{x}+{y}")
         
-        text_box = tk.Text(dialog, height=4, width=40, bg=Theme.BG_INPUT, 
-                          fg=Theme.FG_PRIMARY, insertbackground=Theme.FG_PRIMARY)
-        text_box.pack(pady=5, padx=20)
+        return dialog
+    
+    def _text_dialog(self, x, y):
+        dialog = self._create_dialog("Add Text", 420, 240)
+        
+        tk.Label(dialog, text="Enter text:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY,
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM)).pack(pady=(Theme.PAD_LG, Theme.PAD_SM))
+        
+        text_box = tk.Text(dialog, height=4, width=45, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY,
+                          insertbackground=Theme.FG_PRIMARY, relief=tk.FLAT,
+                          font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
+        text_box.pack(padx=Theme.PAD_LG, pady=Theme.PAD_SM)
         text_box.focus_set()
         
-        size_frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
-        size_frame.pack(pady=5)
-        tk.Label(size_frame, text="Size:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(side=tk.LEFT)
+        opt = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+        opt.pack(pady=Theme.PAD_SM)
+        tk.Label(opt, text="Size:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(side=tk.LEFT)
         size_var = tk.StringVar(value="12")
-        tk.Spinbox(size_frame, from_=6, to=72, textvariable=size_var, width=5,
-                  bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack(side=tk.LEFT, padx=5)
+        tk.Spinbox(opt, from_=6, to=72, textvariable=size_var, width=5, bg=Theme.BG_INPUT,
+                  fg=Theme.FG_PRIMARY).pack(side=tk.LEFT, padx=Theme.PAD_SM)
         
         def add():
             text = text_box.get("1.0", tk.END).strip()
             if text:
-                self.doc.add_text(self.current_page, text, x, y, 
-                                 int(size_var.get()), self.draw_color)
+                self.doc.add_text(self.current_page, text, x, y, int(size_var.get()))
                 self._render_page()
             dialog.destroy()
         
         btn_frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
-        btn_frame.pack(pady=10)
-        tk.Button(btn_frame, text="Add", command=add, bg=Theme.ACCENT, 
-                 fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=20).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="Cancel", command=dialog.destroy, bg=Theme.BG_HOVER,
-                 fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=20).pack(side=tk.LEFT)
+        btn_frame.pack(pady=Theme.PAD_LG)
+        ModernButton(btn_frame, text="Add", command=add, style="primary", width=100).pack(side=tk.LEFT, padx=Theme.PAD_SM)
+        ModernButton(btn_frame, text="Cancel", command=dialog.destroy, width=100).pack(side=tk.LEFT)
     
-    def _add_comment_dialog(self, x: float, y: float):
-        dialog = tk.Toplevel(self)
-        dialog.title("Add Comment")
-        dialog.geometry("350x180")
-        dialog.configure(bg=Theme.BG_SECONDARY)
-        dialog.transient(self)
-        dialog.grab_set()
+    def _comment_dialog(self, x, y):
+        dialog = self._create_dialog("Add Comment", 380, 200)
         
-        tk.Label(dialog, text="Comment:", bg=Theme.BG_SECONDARY, 
-                fg=Theme.FG_PRIMARY).pack(pady=10)
+        tk.Label(dialog, text="Comment:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY,
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM)).pack(pady=(Theme.PAD_LG, Theme.PAD_SM))
         
-        text_box = tk.Text(dialog, height=4, width=35, bg=Theme.BG_INPUT,
-                          fg=Theme.FG_PRIMARY, insertbackground=Theme.FG_PRIMARY)
-        text_box.pack(pady=5, padx=20)
+        text_box = tk.Text(dialog, height=4, width=38, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY,
+                          insertbackground=Theme.FG_PRIMARY, relief=tk.FLAT)
+        text_box.pack(padx=Theme.PAD_LG, pady=Theme.PAD_SM)
         text_box.focus_set()
         
         def add():
@@ -2278,117 +2309,262 @@ class PDFEditorPro(tk.Tk):
             dialog.destroy()
         
         btn_frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
-        btn_frame.pack(pady=10)
-        tk.Button(btn_frame, text="Add", command=add, bg=Theme.ACCENT,
-                 fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=20).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="Cancel", command=dialog.destroy, bg=Theme.BG_HOVER,
-                 fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=20).pack(side=tk.LEFT)
+        btn_frame.pack(pady=Theme.PAD_LG)
+        ModernButton(btn_frame, text="Add", command=add, style="primary", width=100).pack(side=tk.LEFT, padx=Theme.PAD_SM)
+        ModernButton(btn_frame, text="Cancel", command=dialog.destroy, width=100).pack(side=tk.LEFT)
     
-    def _add_image_dialog(self):
+    def _show_stamp_dialog(self):
         if not self.doc:
             return
-        filepath = filedialog.askopenfilename(
-            filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.bmp"), ("All", "*.*")])
-        if filepath:
-            pw, ph = self.doc.get_page_size(self.current_page)
-            if self.doc.add_image(self.current_page, filepath, pw/4, ph/4):
+        dialog = self._create_dialog("Select Stamp", 420, 340)
+        
+        tk.Label(dialog, text="Select a Stamp", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY,
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_LG, "bold")).pack(pady=Theme.PAD_LG)
+        
+        frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+        frame.pack(fill=tk.BOTH, expand=True, padx=Theme.PAD_LG, pady=Theme.PAD_SM)
+        
+        def select(stamp):
+            self.selected_stamp = stamp
+            self._set_tool(ToolMode.STAMP)
+            dialog.destroy()
+            self._status(f"Stamp: {stamp['name']} - Click to place")
+        
+        for i, stamp in enumerate(BUILTIN_STAMPS):
+            btn = tk.Button(frame, text=stamp['text'], bg=stamp['bg'], fg=stamp['fg'],
+                           font=(Theme.FONT_FAMILY, 10, "bold"), relief=tk.FLAT, padx=10, pady=6,
+                           command=lambda s=stamp: select(s))
+            btn.grid(row=i//3, column=i%3, padx=4, pady=4, sticky='ew')
+        
+        for i in range(3):
+            frame.columnconfigure(i, weight=1)
+        
+        ModernButton(dialog, text="Cancel", command=dialog.destroy, width=100).pack(pady=Theme.PAD_LG)
+    
+    def _watermark_dialog(self):
+        if not self.doc:
+            return
+        dialog = self._create_dialog("Add Watermark", 380, 280)
+        
+        tk.Label(dialog, text="Watermark Text:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_LG, Theme.PAD_SM))
+        text_entry = ModernEntry(dialog, width=30)
+        text_entry.pack(ipady=4)
+        text_entry.insert(0, "CONFIDENTIAL")
+        
+        tk.Label(dialog, text="Font Size:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_SM))
+        size_var = tk.StringVar(value="48")
+        tk.Spinbox(dialog, from_=12, to=144, textvariable=size_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+        
+        tk.Label(dialog, text="Rotation:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_SM))
+        angle_var = tk.StringVar(value="45")
+        tk.Spinbox(dialog, from_=-90, to=90, textvariable=angle_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+        
+        def apply():
+            self.doc.add_watermark(text_entry.get(), int(size_var.get()), angle=float(angle_var.get()))
+            self._render_page()
+            dialog.destroy()
+            self._status("Watermark added")
+        
+        ModernButton(dialog, text="Apply to All Pages", command=apply, style="primary", width=160).pack(pady=Theme.PAD_LG)
+    
+    def _header_footer_dialog(self):
+        if not self.doc:
+            return
+        dialog = self._create_dialog("Headers & Footers", 450, 320)
+        
+        tk.Label(dialog, text="Placeholders: {page}, {pages}, {date}", bg=Theme.BG_SECONDARY,
+                fg=Theme.FG_MUTED, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_XS)).pack(pady=(Theme.PAD_MD, Theme.PAD_SM))
+        
+        tk.Label(dialog, text="Header:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_SM, Theme.PAD_XS))
+        header_entry = ModernEntry(dialog, width=45)
+        header_entry.pack(ipady=4)
+        
+        tk.Label(dialog, text="Footer:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_XS))
+        footer_entry = ModernEntry(dialog, width=45)
+        footer_entry.pack(ipady=4)
+        footer_entry.insert(0, "Page {page} of {pages}")
+        
+        tk.Label(dialog, text="Font Size:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_XS))
+        size_var = tk.StringVar(value="10")
+        tk.Spinbox(dialog, from_=6, to=24, textvariable=size_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+        
+        def apply():
+            h = header_entry.get() or None
+            f = footer_entry.get() or None
+            if h or f:
+                self.doc.add_header_footer(h, f, int(size_var.get()))
                 self._render_page()
-                self._status("Image added")
+                self._status("Header/footer added")
+            dialog.destroy()
+        
+        ModernButton(dialog, text="Apply", command=apply, style="primary", width=120).pack(pady=Theme.PAD_LG)
     
-    # =========================================================================
-    # PAGE OPERATIONS
-    # =========================================================================
-    
-    def _insert_page(self, index: int):
-        if self.doc:
-            self.doc.insert_page(index)
-            self._refresh_all()
-    
-    def _delete_page(self, page_num: int = None):
+    def _bates_dialog(self):
         if not self.doc:
             return
-        p = page_num if page_num is not None else self.current_page
-        if self.doc.page_count <= 1:
-            messagebox.showwarning("Warning", "Cannot delete the only page.")
-            return
-        if messagebox.askyesno("Delete", f"Delete page {p + 1}?"):
-            self.doc.delete_page(p)
-            if self.current_page >= self.doc.page_count:
-                self.current_page = self.doc.page_count - 1
-            self._refresh_all()
+        dialog = self._create_dialog("Bates Numbering", 380, 340)
+        
+        tk.Label(dialog, text="Prefix:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_LG, Theme.PAD_XS))
+        prefix_entry = ModernEntry(dialog, width=20)
+        prefix_entry.pack(ipady=3)
+        prefix_entry.insert(0, "DOC-")
+        
+        tk.Label(dialog, text="Start Number:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_XS))
+        start_var = tk.StringVar(value="1")
+        tk.Spinbox(dialog, from_=1, to=999999, textvariable=start_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+        
+        tk.Label(dialog, text="Digits:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_XS))
+        digits_var = tk.StringVar(value="6")
+        tk.Spinbox(dialog, from_=3, to=10, textvariable=digits_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+        
+        tk.Label(dialog, text="Position:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_XS))
+        pos_var = tk.StringVar(value="bottom-right")
+        ttk.Combobox(dialog, textvariable=pos_var, values=["top-left", "top-right", "bottom-left", "bottom-right"], width=15).pack()
+        
+        def apply():
+            self.doc.add_bates_numbers(prefix_entry.get(), int(start_var.get()), int(digits_var.get()), pos_var.get())
+            self._render_page()
+            dialog.destroy()
+            self._status("Bates numbers added")
+        
+        ModernButton(dialog, text="Apply", command=apply, style="primary", width=120).pack(pady=Theme.PAD_LG)
     
-    def _rotate(self, page_num: int, angle: int):
-        if self.doc:
-            self.doc.rotate_page(page_num, angle)
-            self._refresh_all()
-    
-    def _extract_page(self, page_num: int):
+    def _password_dialog(self):
         if not self.doc:
             return
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".pdf", initialname=f"page_{page_num+1}.pdf",
-            filetypes=[("PDF", "*.pdf")])
-        if filepath:
-            new_doc = fitz.open()
-            new_doc.insert_pdf(self.doc.doc, from_page=page_num, to_page=page_num)
-            new_doc.save(filepath)
-            new_doc.close()
-            self._status(f"Extracted page {page_num + 1}")
+        dialog = self._create_dialog("Password Protection", 350, 200)
+        
+        tk.Label(dialog, text="Password:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_LG, Theme.PAD_XS))
+        pass_entry = tk.Entry(dialog, show="*", width=25, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
+        pass_entry.pack(ipady=4)
+        
+        tk.Label(dialog, text="Confirm:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_XS))
+        confirm_entry = tk.Entry(dialog, show="*", width=25, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
+        confirm_entry.pack(ipady=4)
+        
+        def apply():
+            if pass_entry.get() != confirm_entry.get():
+                messagebox.showerror("Error", "Passwords don't match")
+                return
+            output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
+            if output:
+                try:
+                    self.doc.doc.save(output, encryption=fitz.PDF_ENCRYPT_AES_256, user_pw=pass_entry.get())
+                    dialog.destroy()
+                    self._status("Protected PDF saved")
+                except Exception as e:
+                    messagebox.showerror("Error", str(e))
+        
+        ModernButton(dialog, text="Save Protected", command=apply, style="primary", width=140).pack(pady=Theme.PAD_LG)
     
     # =========================================================================
     # SEARCH
     # =========================================================================
     
     def _show_search(self):
-        self.search_bar.pack(fill=tk.X, before=self.main)
-        self.search_bar.focus_entry()
+        self.search_frame.pack(fill=tk.X, before=self.canvas.master.master)
+        self.search_entry.focus_set()
     
     def _hide_search(self):
-        self.search_bar.pack_forget()
-        self.search_highlights = []
+        self.search_frame.pack_forget()
+        self.search_results = []
         self._render_page()
     
-    def _do_search(self, query: str) -> List[SearchResult]:
-        if not self.doc:
-            return []
-        results = self.doc.search_text(query)
-        self.search_highlights = results
+    def _do_search(self):
+        query = self.search_entry.get_value()
+        if not query or not self.doc:
+            return
         
-        if results:
-            # Go to first result
-            self.current_page = results[0].page
+        self.search_results = self.doc.search_text(query)
+        self.search_idx = 0
+        
+        if self.search_results:
+            self.search_results_label.configure(text=f"1 of {len(self.search_results)}")
+            self._goto_page(self.search_results[0].page)
+        else:
+            self.search_results_label.configure(text="No results")
             self._render_page()
-            self._update_ui()
-        
-        return results
+    
+    def _nav_search(self, direction):
+        if not self.search_results:
+            return
+        self.search_idx = (self.search_idx + direction) % len(self.search_results)
+        self.search_results_label.configure(text=f"{self.search_idx + 1} of {len(self.search_results)}")
+        self._goto_page(self.search_results[self.search_idx].page)
     
     # =========================================================================
-    # UNDO/REDO
+    # PAGE OPERATIONS
     # =========================================================================
     
-    def _undo(self):
-        if self.doc and self.doc.can_undo():
-            # Basic implementation - would need more work for full undo
-            self._status("Undo - reloading document")
+    def _insert_page(self):
+        if self.doc:
+            self.doc.insert_page(self.current_page + 1)
+            self._refresh_all()
     
-    def _redo(self):
-        if self.doc and self.doc.can_redo():
-            self._status("Redo")
+    def _insert_page_at(self, index):
+        if self.doc:
+            self.doc.insert_page(index)
+            self._refresh_all()
+    
+    def _duplicate_page(self):
+        self._duplicate_page_at(self.current_page)
+    
+    def _duplicate_page_at(self, page_num):
+        if self.doc:
+            self.doc.duplicate_page(page_num)
+            self._refresh_all()
+    
+    def _delete_page(self):
+        self._delete_page_at(self.current_page)
+    
+    def _delete_page_at(self, page_num):
+        if not self.doc or self.doc.page_count <= 1:
+            messagebox.showwarning("Warning", "Cannot delete the only page")
+            return
+        if messagebox.askyesno("Delete Page", f"Delete page {page_num + 1}?"):
+            self.doc.delete_page(page_num)
+            if self.current_page >= self.doc.page_count:
+                self.current_page = self.doc.page_count - 1
+            self._refresh_all()
+    
+    def _extract_page(self):
+        if not self.doc:
+            return
+        output = filedialog.asksaveasfilename(defaultextension=".pdf", initialname=f"page_{self.current_page+1}.pdf")
+        if output:
+            new_doc = fitz.open()
+            new_doc.insert_pdf(self.doc.doc, from_page=self.current_page, to_page=self.current_page)
+            new_doc.save(output)
+            new_doc.close()
+            self._status(f"Page extracted to {os.path.basename(output)}")
+    
+    def _rotate(self, angle):
+        self._rotate_page(self.current_page, angle)
+    
+    def _rotate_page(self, page_num, angle):
+        if self.doc:
+            self.doc.rotate_page(page_num, angle)
+            self._refresh_all()
     
     # =========================================================================
     # DOCUMENT OPERATIONS
     # =========================================================================
     
-    def _copy_page_text(self):
+    def _add_image(self):
+        if not self.doc:
+            return
+        filepath = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.bmp")])
+        if filepath:
+            if self.doc.add_image(self.current_page, filepath):
+                self._render_page()
+                self._status("Image added")
+    
+    def _copy_text(self):
         if self.doc:
             text = self.doc.get_text(self.current_page)
             self.clipboard_clear()
             self.clipboard_append(text)
-            self._status("Text copied")
-    
-    # =========================================================================
-    # MENU COMMANDS (would be connected to menu)
-    # =========================================================================
+            self._status("Text copied to clipboard")
     
     def _merge_pdfs(self):
         files = filedialog.askopenfilenames(filetypes=[("PDF", "*.pdf")])
@@ -2406,234 +2582,87 @@ class PDFEditorPro(tk.Tk):
         merged.save(output)
         merged.close()
         
-        if messagebox.askyesno("Done", "Open merged PDF?"):
+        if messagebox.askyesno("Done", f"Merged {len(files)} files. Open result?"):
             self._open_doc(output)
     
-    def _compress_pdf(self):
+    def _split_doc(self):
         if not self.doc:
             return
-        output = filedialog.asksaveasfilename(defaultextension=".pdf",
-                                              initialname=f"compressed_{self.doc.filename}",
-                                              filetypes=[("PDF", "*.pdf")])
+        output_dir = filedialog.askdirectory(title="Select output folder")
+        if output_dir:
+            files = self.doc.split_pages(output_dir)
+            messagebox.showinfo("Done", f"Split into {len(files)} files")
+    
+    def _compress_doc(self):
+        if not self.doc:
+            return
+        output = filedialog.asksaveasfilename(defaultextension=".pdf", initialname=f"compressed_{self.doc.filename}")
         if output:
+            orig_size = os.path.getsize(self.doc.filepath) if self.doc.filepath else 0
             if self.doc.compress(output):
-                orig_size = os.path.getsize(self.doc.filepath) if self.doc.filepath else 0
                 new_size = os.path.getsize(output)
                 savings = (1 - new_size / orig_size) * 100 if orig_size else 0
-                messagebox.showinfo("Compressed", f"Saved {savings:.1f}% ({new_size // 1024} KB)")
+                messagebox.showinfo("Compressed", f"Original: {orig_size // 1024} KB\nCompressed: {new_size // 1024} KB\nSaved: {savings:.1f}%")
     
-    def _ocr_document(self):
+    def _ocr_doc(self):
         if not self.doc:
             return
-        
         ok, msg = OCREngine.is_available()
         if not ok:
             messagebox.showerror("OCR Unavailable", msg)
             return
         
-        if not messagebox.askyesno("OCR", "Make document searchable with OCR?\nThis may take a while."):
+        if not messagebox.askyesno("OCR", "Make document searchable?\nThis may take a while."):
             return
         
-        progress = tk.Toplevel(self)
-        progress.title("OCR")
-        progress.geometry("300x80")
-        progress.configure(bg=Theme.BG_SECONDARY)
-        progress.transient(self)
-        
-        label = tk.Label(progress, text="Processing...", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY)
-        label.pack(pady=25)
+        dialog = self._create_dialog("OCR Processing", 300, 100)
+        label = tk.Label(dialog, text="Processing...", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY)
+        label.pack(expand=True)
         
         def run():
-            ok, count = OCREngine.make_searchable(
-                self.doc, callback=lambda m: self.after(0, lambda: label.configure(text=m)))
-            self.after(0, lambda: self._ocr_done(ok, count, progress))
+            ok, count = OCREngine.make_searchable(self.doc, lambda m: self.after(0, lambda: label.configure(text=m)))
+            self.after(0, lambda: self._ocr_done(ok, count, dialog))
         
-        threading.Thread(target=run).start()
+        threading.Thread(target=run, daemon=True).start()
     
-    def _ocr_done(self, ok: bool, count: int, dialog):
+    def _ocr_done(self, ok, count, dialog):
         dialog.destroy()
         if ok:
             self._render_page()
             messagebox.showinfo("OCR Complete", f"Processed {count} pages.\nDocument is now searchable.")
         else:
-            messagebox.showerror("OCR Failed", "OCR processing failed.")
-    
-    # =========================================================================
-    # WATERMARK, HEADERS, BATES
-    # =========================================================================
-    
-    def _watermark_dialog(self):
-        if not self.doc:
-            return
-        dialog = tk.Toplevel(self)
-        dialog.title("Add Watermark")
-        dialog.geometry("380x280")
-        dialog.configure(bg=Theme.BG_SECONDARY)
-        dialog.transient(self)
-        dialog.grab_set()
-        
-        tk.Label(dialog, text="Watermark Text:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(20, 5))
-        text_entry = tk.Entry(dialog, width=30, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
-        text_entry.pack(ipady=4)
-        text_entry.insert(0, "CONFIDENTIAL")
-        
-        tk.Label(dialog, text="Font Size:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(15, 5))
-        size_var = tk.StringVar(value="48")
-        tk.Spinbox(dialog, from_=12, to=144, textvariable=size_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
-        
-        tk.Label(dialog, text="Rotation (degrees):", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(15, 5))
-        angle_var = tk.StringVar(value="45")
-        tk.Spinbox(dialog, from_=-90, to=90, textvariable=angle_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
-        
-        def apply():
-            self.doc.add_watermark(text_entry.get(), int(size_var.get()), angle=float(angle_var.get()))
-            self._render_page()
-            dialog.destroy()
-            self._status("Watermark added to all pages")
-        
-        tk.Button(dialog, text="Apply to All Pages", command=apply, bg=Theme.ACCENT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=20).pack(pady=25)
-    
-    def _header_footer_dialog(self):
-        if not self.doc:
-            return
-        dialog = tk.Toplevel(self)
-        dialog.title("Add Header/Footer")
-        dialog.geometry("450x320")
-        dialog.configure(bg=Theme.BG_SECONDARY)
-        dialog.transient(self)
-        dialog.grab_set()
-        
-        tk.Label(dialog, text="Placeholders: {page}, {pages}, {date}, {filename}", bg=Theme.BG_SECONDARY, fg=Theme.FG_MUTED, font=(Theme.FONT, Theme.FONT_SMALL)).pack(pady=(15, 10))
-        
-        tk.Label(dialog, text="Header:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(10, 5))
-        header_entry = tk.Entry(dialog, width=45, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
-        header_entry.pack(ipady=4)
-        
-        tk.Label(dialog, text="Footer:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(15, 5))
-        footer_entry = tk.Entry(dialog, width=45, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
-        footer_entry.pack(ipady=4)
-        footer_entry.insert(0, "Page {page} of {pages}")
-        
-        tk.Label(dialog, text="Font Size:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(15, 5))
-        size_var = tk.StringVar(value="10")
-        tk.Spinbox(dialog, from_=6, to=24, textvariable=size_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
-        
-        def apply():
-            h = header_entry.get() or None
-            f = footer_entry.get() or None
-            if h or f:
-                self.doc.add_header_footer(h, f, int(size_var.get()))
-                self._render_page()
-                self._status("Header/footer added")
-            dialog.destroy()
-        
-        tk.Button(dialog, text="Apply", command=apply, bg=Theme.ACCENT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=25).pack(pady=20)
-    
-    def _bates_dialog(self):
-        if not self.doc:
-            return
-        dialog = tk.Toplevel(self)
-        dialog.title("Bates Numbering")
-        dialog.geometry("380x350")
-        dialog.configure(bg=Theme.BG_SECONDARY)
-        dialog.transient(self)
-        dialog.grab_set()
-        
-        tk.Label(dialog, text="Prefix:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(20, 5))
-        prefix_entry = tk.Entry(dialog, width=20, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
-        prefix_entry.pack(ipady=3)
-        prefix_entry.insert(0, "DOC-")
-        
-        tk.Label(dialog, text="Start Number:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(10, 5))
-        start_var = tk.StringVar(value="1")
-        tk.Spinbox(dialog, from_=1, to=999999, textvariable=start_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
-        
-        tk.Label(dialog, text="Digits:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(10, 5))
-        digits_var = tk.StringVar(value="6")
-        tk.Spinbox(dialog, from_=3, to=10, textvariable=digits_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
-        
-        tk.Label(dialog, text="Position:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(10, 5))
-        pos_var = tk.StringVar(value="bottom-right")
-        positions = ["top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"]
-        ttk.Combobox(dialog, textvariable=pos_var, values=positions, width=15).pack()
-        
-        def apply():
-            self.doc.add_bates_numbers(prefix=prefix_entry.get(), start=int(start_var.get()), digits=int(digits_var.get()), position=pos_var.get())
-            self._render_page()
-            dialog.destroy()
-            self._status("Bates numbers added")
-        
-        tk.Button(dialog, text="Apply", command=apply, bg=Theme.ACCENT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=25).pack(pady=25)
-    
-    # =========================================================================
-    # STAMPS
-    # =========================================================================
-    
-    def _show_stamp_picker(self):
-        if not self.doc:
-            return
-        dialog = tk.Toplevel(self)
-        dialog.title("Select Stamp")
-        dialog.geometry("400x320")
-        dialog.configure(bg=Theme.BG_SECONDARY)
-        dialog.transient(self)
-        dialog.grab_set()
-        
-        tk.Label(dialog, text="Select a Stamp", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY, font=(Theme.FONT, Theme.FONT_TITLE, "bold")).pack(pady=15)
-        
-        frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
-        frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-        
-        def select_stamp(stamp):
-            self.selected_stamp = stamp
-            self._set_tool(ToolMode.STAMP)
-            dialog.destroy()
-            self._status(f"Stamp selected: {stamp['name']} - Click on page to place")
-        
-        for i, stamp in enumerate(BUILTIN_STAMPS):
-            btn = tk.Button(frame, text=stamp['text'], bg=stamp['bg'], fg=stamp['color'], font=(Theme.FONT, 10, "bold"), relief=tk.FLAT, padx=10, pady=5, command=lambda s=stamp: select_stamp(s))
-            btn.grid(row=i//3, column=i%3, padx=5, pady=5, sticky='ew')
-        
-        for i in range(3):
-            frame.columnconfigure(i, weight=1)
-        
-        tk.Button(dialog, text="Cancel", command=dialog.destroy, bg=Theme.BG_HOVER, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=20).pack(pady=15)
+            messagebox.showerror("OCR Failed", "OCR processing failed")
     
     # =========================================================================
     # EXPORTS
     # =========================================================================
     
-    def _export_to_word(self):
+    def _export_word(self):
         if not self.doc:
             return
         if not HAS_DOCX:
-            messagebox.showerror("Unavailable", "python-docx failed to install.\nTry manually: pip install python-docx\nThen restart the application.")
+            messagebox.showerror("Unavailable", "python-docx not installed.\nRestart the app to auto-install.")
             return
-        output = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word Document", "*.docx")])
+        output = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word", "*.docx")])
         if output:
             if self.doc.export_to_word(output):
                 self._status("Exported to Word")
-                messagebox.showinfo("Done", "Document exported to Word format")
+                messagebox.showinfo("Done", "Exported to Word format")
             else:
                 messagebox.showerror("Error", "Export failed")
     
-    def _export_to_images(self):
+    def _export_images(self):
         if not self.doc:
             return
-        dialog = tk.Toplevel(self)
-        dialog.title("Export to Images")
-        dialog.geometry("320x220")
-        dialog.configure(bg=Theme.BG_SECONDARY)
-        dialog.transient(self)
-        dialog.grab_set()
+        dialog = self._create_dialog("Export to Images", 320, 220)
         
-        tk.Label(dialog, text="DPI:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(20, 5))
+        tk.Label(dialog, text="DPI:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_LG, Theme.PAD_XS))
         dpi_var = tk.StringVar(value="150")
         tk.Spinbox(dialog, from_=72, to=600, textvariable=dpi_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
         
-        tk.Label(dialog, text="Format:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(15, 5))
+        tk.Label(dialog, text="Format:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_XS))
         fmt_var = tk.StringVar(value="png")
-        ttk.Combobox(dialog, textvariable=fmt_var, values=["png", "jpg", "jpeg"], width=10).pack()
+        ttk.Combobox(dialog, textvariable=fmt_var, values=["png", "jpg"], width=10).pack()
         
         def export():
             output_dir = filedialog.askdirectory(title="Select output folder")
@@ -2642,164 +2671,97 @@ class PDFEditorPro(tk.Tk):
                 dialog.destroy()
                 messagebox.showinfo("Done", f"Exported {len(files)} images")
         
-        tk.Button(dialog, text="Export", command=export, bg=Theme.ACCENT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=25).pack(pady=25)
+        ModernButton(dialog, text="Export", command=export, style="primary", width=100).pack(pady=Theme.PAD_LG)
     
     def _export_text(self):
         if not self.doc:
             return
-        output = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text File", "*.txt")])
+        output = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text", "*.txt")])
         if output:
             if self.doc.export_text(output):
                 self._status("Text exported")
-                messagebox.showinfo("Done", "Text extracted to file")
+                messagebox.showinfo("Done", "Text extracted")
             else:
                 messagebox.showerror("Error", "Export failed")
     
     # =========================================================================
-    # DOCUMENT OPERATIONS
+    # MISC
     # =========================================================================
-    
-    def _split_document(self):
-        if not self.doc:
-            return
-        output_dir = filedialog.askdirectory(title="Select output folder for split pages")
-        if output_dir:
-            files = self.doc.split_pages(output_dir)
-            messagebox.showinfo("Done", f"Split into {len(files)} separate PDF files")
-    
-    def _flatten_annotations(self):
-        if self.doc:
-            self.doc.flatten_annotations()
-            self._render_page()
-            self._status("Annotations flattened into page content")
-    
-    def _remove_metadata(self):
-        if self.doc:
-            if messagebox.askyesno("Remove Metadata", "Remove all document metadata (author, title, etc.)?"):
-                self.doc.remove_metadata()
-                self._status("Metadata removed")
-    
-    def _set_password_dialog(self):
-        if not self.doc:
-            return
-        dialog = tk.Toplevel(self)
-        dialog.title("Set Password Protection")
-        dialog.geometry("350x200")
-        dialog.configure(bg=Theme.BG_SECONDARY)
-        dialog.transient(self)
-        dialog.grab_set()
-        
-        tk.Label(dialog, text="Password:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(20, 5))
-        pass_entry = tk.Entry(dialog, show="*", width=25, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
-        pass_entry.pack(ipady=4)
-        
-        tk.Label(dialog, text="Confirm:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(10, 5))
-        confirm_entry = tk.Entry(dialog, show="*", width=25, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
-        confirm_entry.pack(ipady=4)
-        
-        def apply():
-            if pass_entry.get() != confirm_entry.get():
-                messagebox.showerror("Error", "Passwords don't match")
-                return
-            output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
-            if output:
-                try:
-                    perm = fitz.PDF_PERM_PRINT | fitz.PDF_PERM_COPY
-                    self.doc.doc.save(output, encryption=fitz.PDF_ENCRYPT_AES_256, user_pw=pass_entry.get(), permissions=perm)
-                    self._status("Password-protected PDF saved")
-                    dialog.destroy()
-                except Exception as e:
-                    messagebox.showerror("Error", str(e))
-        
-        tk.Button(dialog, text="Save Protected PDF", command=apply, bg=Theme.ACCENT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=20).pack(pady=20)
     
     def _show_properties(self):
         if not self.doc:
             return
-        dialog = tk.Toplevel(self)
-        dialog.title("Document Properties")
-        dialog.geometry("420x380")
-        dialog.configure(bg=Theme.BG_SECONDARY)
-        dialog.transient(self)
+        dialog = self._create_dialog("Document Properties", 420, 360)
         
         meta = self.doc.get_metadata()
-        
-        fields = [("Title", meta.get('title', '')), ("Author", meta.get('author', '')), ("Subject", meta.get('subject', '')), ("Keywords", meta.get('keywords', ''))]
+        fields = [("Title", "title"), ("Author", "author"), ("Subject", "subject"), ("Keywords", "keywords")]
         entries = {}
         
-        for label, value in fields:
+        for label, key in fields:
             frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
-            frame.pack(fill=tk.X, padx=20, pady=5)
-            tk.Label(frame, text=label + ":", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY, width=12, anchor='w').pack(side=tk.LEFT)
-            entry = tk.Entry(frame, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, width=35)
+            frame.pack(fill=tk.X, padx=Theme.PAD_LG, pady=Theme.PAD_SM)
+            tk.Label(frame, text=label + ":", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY, width=12, anchor="w").pack(side=tk.LEFT)
+            entry = ModernEntry(frame, width=32)
             entry.pack(side=tk.LEFT, ipady=3)
-            entry.insert(0, value or '')
-            entries[label.lower()] = entry
+            entry.insert(0, meta.get(key, '') or '')
+            entries[key] = entry
         
-        tk.Label(dialog, text=f"\nFile: {self.doc.filename}", bg=Theme.BG_SECONDARY, fg=Theme.FG_SECONDARY).pack()
-        tk.Label(dialog, text=f"Pages: {self.doc.page_count}", bg=Theme.BG_SECONDARY, fg=Theme.FG_SECONDARY).pack()
+        tk.Label(dialog, text=f"\nFile: {self.doc.filename}", bg=Theme.BG_SECONDARY, fg=Theme.FG_MUTED).pack()
+        tk.Label(dialog, text=f"Pages: {self.doc.page_count}", bg=Theme.BG_SECONDARY, fg=Theme.FG_MUTED).pack()
         if self.doc.filepath:
-            size = os.path.getsize(self.doc.filepath) // 1024
-            tk.Label(dialog, text=f"Size: {size} KB", bg=Theme.BG_SECONDARY, fg=Theme.FG_SECONDARY).pack()
+            tk.Label(dialog, text=f"Size: {os.path.getsize(self.doc.filepath) // 1024} KB", bg=Theme.BG_SECONDARY, fg=Theme.FG_MUTED).pack()
         
         def save():
-            new_meta = {k: e.get() for k, e in entries.items()}
-            self.doc.set_metadata(new_meta)
+            self.doc.set_metadata({k: e.get() for k, e in entries.items()})
             dialog.destroy()
             self._status("Properties updated")
         
-        tk.Button(dialog, text="Save", command=save, bg=Theme.ACCENT, fg=Theme.FG_PRIMARY, relief=tk.FLAT, padx=25).pack(pady=20)
-    
-    def _print_doc(self):
-        if not self.doc or not self.doc.filepath:
-            messagebox.showinfo("Print", "Save the document first, then use your system PDF viewer to print.")
-            return
-        try:
-            if platform.system() == "Windows":
-                os.startfile(self.doc.filepath, "print")
-            else:
-                subprocess.run(["lp", self.doc.filepath])
-            self._status("Sent to printer")
-        except Exception as e:
-            messagebox.showerror("Print Error", str(e))
-    
-    def _duplicate_page(self):
-        if self.doc:
-            self.doc.duplicate_page(self.current_page)
-            self._refresh_all()
-            self._status("Page duplicated")
+        ModernButton(dialog, text="Save", command=save, style="primary", width=100).pack(pady=Theme.PAD_LG)
     
     def _show_shortcuts(self):
         shortcuts = """
-Keyboard Shortcuts:
+Keyboard Shortcuts
 
 FILE
-  Ctrl+N        New document
-  Ctrl+O        Open file
-  Ctrl+S        Save
-  Ctrl+W        Close tab
+  Ctrl+N    New document
+  Ctrl+O    Open file
+  Ctrl+S    Save
+  Ctrl+W    Close tab
 
 NAVIGATION
-  Home          First page
-  End           Last page
-  Page Up       Previous page
-  Page Down     Next page
+  Home      First page
+  End       Last page
+  PgUp      Previous page
+  PgDn      Next page
 
 VIEW
-  Ctrl++        Zoom in
-  Ctrl+-        Zoom out
-  Ctrl+0        Fit page
-  Ctrl+1        100% zoom
+  Ctrl++    Zoom in
+  Ctrl+-    Zoom out
+  Ctrl+0    Fit page
 
 TOOLS
-  Escape        Select tool
-  Delete        Delete page
-  Ctrl+F        Find text
+  Escape    Select tool
+  Delete    Delete page
+  Ctrl+F    Find text
 """
         messagebox.showinfo("Keyboard Shortcuts", shortcuts)
     
     def _show_about(self):
-        messagebox.showinfo("About PDF Editor Pro", "PDF Editor Pro v3.0\n\nA comprehensive PDF editing suite.\n\nFeatures:\n• Multi-document tabs\n• Search & navigation\n• Annotations & comments\n• Stamps library\n• Watermarks & headers\n• Bates numbering\n• OCR text recognition\n• Export to Word/images\n• Merge, split, compress\n• Password protection\n\n© 2025")
+        messagebox.showinfo("About",
+            "PDF Editor Pro v4.0\n\n"
+            "Professional PDF Editing Suite\n\n"
+            "Features:\n"
+            "• Multi-document tabs\n"
+            "• Search & navigation\n"
+            "• Annotations & comments\n"
+            "• Stamps library\n"
+            "• Watermarks & headers\n"
+            "• Bates numbering\n"
+            "• OCR text recognition\n"
+            "• Export to Word/images\n"
+            "• Merge, split, compress\n"
+            "• Password protection\n\n"
+            "© 2025")
     
     # =========================================================================
     # CLEANUP
@@ -2808,16 +2770,16 @@ TOOLS
     def _on_close(self):
         for doc in self.documents.values():
             if doc.is_modified:
-                r = messagebox.askyesnocancel("Save?", f"Save changes to {doc.filename}?")
+                r = messagebox.askyesnocancel("Save Changes?", f"Save changes to {doc.filename}?")
                 if r is None:
                     return
                 if r:
-                    if not doc.filepath:
+                    if doc.filepath:
+                        doc.save()
+                    else:
                         path = filedialog.asksaveasfilename(defaultextension=".pdf")
                         if path:
                             doc.save(path)
-                    else:
-                        doc.save()
         
         self.config_data["window_geometry"] = self.geometry()
         Config.save(self.config_data)
@@ -2838,7 +2800,19 @@ def main():
     except:
         pass
     
+    # Configure ttk styles
     app = PDFEditorPro()
+    
+    style = ttk.Style()
+    style.theme_use('clam')
+    style.configure("TScrollbar", background=Theme.BG_ACTIVE, troughcolor=Theme.BG_PRIMARY,
+                   bordercolor=Theme.BG_PRIMARY, arrowcolor=Theme.FG_PRIMARY)
+    style.configure("TCombobox", fieldbackground=Theme.BG_INPUT, background=Theme.BG_INPUT,
+                   foreground=Theme.FG_PRIMARY, selectbackground=Theme.ACCENT)
+    style.configure("Treeview", background=Theme.BG_INPUT, foreground=Theme.FG_PRIMARY,
+                   fieldbackground=Theme.BG_INPUT)
+    style.map("Treeview", background=[("selected", Theme.ACCENT)])
+    
     app.mainloop()
 
 if __name__ == "__main__":
