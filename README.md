@@ -1,11 +1,9 @@
 # PDFedit
-<<<<<<< HEAD
 A simple PDF editor.
 
 
 ![Screenshot](screenshot.png)
 
-=======
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Language](https://img.shields.io/badge/language-Python-3776AB)
@@ -62,4 +60,3 @@ In the page panel on the left, drag page thumbnails to the desired order, then *
 ## License
 
 MIT License
->>>>>>> dfef9312232f7fe217ff251ef1f9afd1ee1a5828
