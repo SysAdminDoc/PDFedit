@@ -42,7 +42,7 @@ import urllib.request
 import shutil
 import tempfile
 import json
-from pathlib import Path
+import difflib
 from datetime import datetime
 
 # ============================================================================
@@ -149,7 +149,11 @@ def check_and_install_dependencies():
     if (path := get_tesseract_path()):
         os.environ["TESSERACT_CMD"] = path
 
-check_and_install_dependencies()
+# Dependency setup is intentionally opt-in for imports.  Importing this module
+# is used by the headless API and CLI, so it must not download packages or a
+# Tesseract installer as an import side effect.
+if __name__ == "__main__":
+    check_and_install_dependencies()
 
 # ============================================================================
 # IMPORTS
@@ -736,6 +740,13 @@ class PDFDocument:
         self._undo_stack = []
         self._redo_stack = []
         self._max_undo = 30  # Limit to prevent excessive memory usage
+
+        # Redactions must be written with a garbage-collecting full save.  An
+        # incremental save can leave the original content recoverable in an
+        # earlier revision of the PDF.
+        self.requires_full_save = False
+        self.redaction_count = 0
+        self.last_error = ""
     
     def _save_undo_state(self):
         """Save current document state for undo"""
@@ -825,9 +836,14 @@ class PDFDocument:
             self.filepath = filepath
             self.is_modified = False
             self.comments = []
+            self.requires_full_save = False
+            self.redaction_count = 0
+            self.last_error = ""
+            self.clear_undo_history()
             self._load_comments()
             return True
         except Exception as e:
+            self.last_error = str(e)
             print(f"Open error: {e}")
             return False
     
@@ -836,6 +852,10 @@ class PDFDocument:
         self.doc.new_page(width=width, height=height)
         self.filepath = None
         self.is_modified = True
+        self.requires_full_save = False
+        self.redaction_count = 0
+        self.last_error = ""
+        self.clear_undo_history()
     
     def save(self, filepath=None):
         if not self.doc:
@@ -843,16 +863,45 @@ class PDFDocument:
         path = filepath or self.filepath
         if not path:
             return False
+
+        temporary_path = None
         try:
             self._save_comments()
-            if path == self.filepath:
+            same_path = bool(self.filepath and
+                             os.path.abspath(path) == os.path.abspath(self.filepath))
+            if same_path and not self.requires_full_save:
                 self.doc.saveIncr()
+            elif same_path:
+                # Save beside the source and replace it only after the open
+                # document has been closed.  This is required on Windows and
+                # also makes redaction saves atomic from the user's view.
+                directory = os.path.dirname(os.path.abspath(path)) or "."
+                with tempfile.NamedTemporaryFile(prefix=".pdfedit-",
+                                                 suffix=".pdf",
+                                                 dir=directory,
+                                                 delete=False) as handle:
+                    temporary_path = handle.name
+                self.doc.save(temporary_path, garbage=4, deflate=True, clean=True)
+                self.doc.close()
+                os.replace(temporary_path, path)
+                temporary_path = None
+                self.doc = fitz.open(path)
             else:
-                self.doc.save(path, garbage=4, deflate=True)
+                self.doc.save(path, garbage=4, deflate=True, clean=True)
             self.filepath = path
             self.is_modified = False
+            self.requires_full_save = False
+            self.redaction_count = 0
+            self.last_error = ""
+            self.clear_undo_history()
             return True
-        except:
+        except Exception as exc:
+            self.last_error = str(exc)
+            if temporary_path:
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    pass
             return False
     
     def close(self):
@@ -872,6 +921,152 @@ class PDFDocument:
         if self.doc and 0 <= num < len(self.doc):
             return self.doc[num]
         return None
+
+    def _set_toc_for_order(self, toc, page_order):
+        """Update simple outline destinations after a page reorder."""
+        if not self.doc or not toc:
+            return
+        new_positions = {old: new + 1 for new, old in enumerate(page_order)}
+        remapped = []
+        for entry in toc:
+            if len(entry) < 3:
+                continue
+            level, title, page = entry[:3]
+            old_page = page - 1
+            if old_page in new_positions:
+                remapped.append([level, title, new_positions[old_page]])
+        try:
+            self.doc.set_toc(remapped)
+        except Exception:
+            # Some PDFs contain malformed outline destinations.  The page
+            # operation is still useful, so leave the original outline in
+            # place rather than failing the whole edit.
+            pass
+
+    def move_pages(self, page_numbers, target_index):
+        """Move one or more pages as a group within this document.
+
+        ``target_index`` is the insertion point in the original page order.
+        The relative order of selected pages is retained.
+        """
+        if not self.doc:
+            return False
+        selected = list(dict.fromkeys(int(p) for p in page_numbers))
+        if not selected or any(p < 0 or p >= len(self.doc) for p in selected):
+            return False
+
+        page_order = list(range(len(self.doc)))
+        target_index = max(0, min(int(target_index), len(page_order)))
+        selected_set = set(selected)
+        remaining = [p for p in page_order if p not in selected_set]
+        insertion = target_index - sum(p < target_index for p in selected)
+        insertion = max(0, min(insertion, len(remaining)))
+        new_order = remaining[:insertion] + selected + remaining[insertion:]
+        if new_order == page_order:
+            return False
+
+        old_toc = self.doc.get_toc(simple=True)
+        self._save_undo_state()
+        try:
+            self.doc.select(new_order)
+            self._set_toc_for_order(old_toc, new_order)
+            self.is_modified = True
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+
+    def move_pages_to(self, other, page_numbers, target_index=-1):
+        """Move selected pages to another ``PDFDocument`` instance."""
+        if not isinstance(other, PDFDocument) or other is self:
+            return self.move_pages(page_numbers, target_index)
+        if not self.doc or not other.doc:
+            return False
+
+        selected = sorted({int(p) for p in page_numbers})
+        if not selected or any(p < 0 or p >= len(self.doc) for p in selected):
+            return False
+
+        destination = len(other.doc) if target_index < 0 else max(0, min(int(target_index), len(other.doc)))
+        self._save_undo_state()
+        other._save_undo_state()
+        try:
+            offset = 0
+            run_start = selected[0]
+            run_end = selected[0]
+            runs = []
+            for page_num in selected[1:]:
+                if page_num == run_end + 1:
+                    run_end = page_num
+                else:
+                    runs.append((run_start, run_end))
+                    run_start = run_end = page_num
+            runs.append((run_start, run_end))
+            for start, end in runs:
+                count = end - start + 1
+                other.doc.insert_pdf(self.doc, from_page=start, to_page=end,
+                                     start_at=destination + offset)
+                offset += count
+            for page_num in reversed(selected):
+                self.doc.delete_page(page_num)
+            self.is_modified = True
+            other.is_modified = True
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            other.last_error = str(exc)
+            return False
+
+    def extract_pages(self, page_numbers, output_path=None):
+        """Create a new document containing selected pages and their outline.
+
+        The returned document remains open for further editing.  When an
+        output path is supplied it is also written there immediately.
+        """
+        if not self.doc:
+            return None
+        selected = list(dict.fromkeys(int(p) for p in page_numbers))
+        if not selected or any(p < 0 or p >= len(self.doc) for p in selected):
+            return None
+
+        result = PDFDocument()
+        result.doc = fitz.open()
+        try:
+            run_start = selected[0]
+            run_end = selected[0]
+            runs = []
+            for page_num in selected[1:]:
+                if page_num == run_end + 1:
+                    run_end = page_num
+                else:
+                    runs.append((run_start, run_end))
+                    run_start = run_end = page_num
+            runs.append((run_start, run_end))
+            for start, end in runs:
+                result.doc.insert_pdf(self.doc, from_page=start, to_page=end)
+
+            old_to_new = {old: new + 1 for new, old in enumerate(selected)}
+            toc = []
+            for entry in self.doc.get_toc(simple=True):
+                if len(entry) >= 3 and entry[2] - 1 in old_to_new:
+                    toc.append([entry[0], entry[1], old_to_new[entry[2] - 1]])
+            if toc:
+                try:
+                    result.doc.set_toc(toc)
+                except Exception:
+                    pass
+
+            if output_path:
+                result.doc.save(output_path, garbage=4, deflate=True, clean=True)
+                result.filepath = output_path
+                result.is_modified = False
+            else:
+                result.is_modified = True
+            return result
+        except Exception as exc:
+            result.last_error = str(exc)
+            result.close()
+            return None
     
     def render_page(self, page_num, zoom=1.0):
         page = self.get_page(page_num)
@@ -1169,6 +1364,44 @@ class PDFDocument:
             return True
         except:
             return False
+
+    def get_page_images(self, page_num):
+        """Return image metadata and displayed rectangles for a page."""
+        page = self.get_page(page_num)
+        if not page:
+            return []
+        images = []
+        for index, image in enumerate(page.get_images(full=True)):
+            xref = image[0]
+            rects = [tuple(rect) for rect in page.get_image_rects(xref)]
+            images.append({
+                "index": index,
+                "xref": xref,
+                "width": image[2],
+                "height": image[3],
+                "rects": rects,
+            })
+        return images
+
+    def replace_image(self, page_num, image_index, image_path):
+        """Replace an embedded image while retaining its displayed geometry."""
+        page = self.get_page(page_num)
+        if not page:
+            return False
+        images = self.get_page_images(page_num)
+        target = next((image for image in images
+                       if image["index"] == image_index or image["xref"] == image_index), None)
+        if not target:
+            return False
+        try:
+            Image.open(image_path).verify()
+            self._save_undo_state()
+            page.replace_image(target["xref"], filename=image_path)
+            self.is_modified = True
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
     
     def add_stamp(self, page_num, x, y, stamp):
         page = self.get_page(page_num)
@@ -1198,10 +1431,38 @@ class PDFDocument:
     def redact_area(self, page_num, rect):
         page = self.get_page(page_num)
         if page:
+            try:
+                self._save_undo_state()
+                page.add_redact_annot(fitz.Rect(rect), fill=(0, 0, 0))
+                page.apply_redactions()
+                self.requires_full_save = True
+                self.redaction_count += 1
+                self.is_modified = True
+                return True
+            except Exception as exc:
+                self.last_error = str(exc)
+        return False
+
+    def redact_text(self, page_num, text, fill=(0, 0, 0)):
+        """Irreversibly remove every matching text occurrence on one page."""
+        page = self.get_page(page_num)
+        if not page or not text:
+            return 0
+        rects = page.search_for(text)
+        if not rects:
+            return 0
+        try:
             self._save_undo_state()
-            page.add_redact_annot(fitz.Rect(rect), fill=(0, 0, 0))
+            for rect in rects:
+                page.add_redact_annot(rect, fill=fill)
             page.apply_redactions()
+            self.requires_full_save = True
+            self.redaction_count += len(rects)
             self.is_modified = True
+            return len(rects)
+        except Exception as exc:
+            self.last_error = str(exc)
+            return 0
     
     # Comments
     def add_comment(self, page, x, y, content, author="User"):
@@ -1245,6 +1506,105 @@ class PDFDocument:
         if not self.doc:
             return []
         return [(item[0], item[1], item[2]-1) for item in self.doc.get_toc()]
+
+    def set_bookmarks(self, bookmarks):
+        """Replace the document outline with ``(level, title, page)`` rows."""
+        if not self.doc:
+            return False
+        try:
+            toc = []
+            for level, title, page in bookmarks:
+                page_number = int(page)
+                if page_number < 0 or page_number >= self.page_count:
+                    continue
+                toc.append([max(1, int(level)), str(title), page_number + 1])
+            self._save_undo_state()
+            self.doc.set_toc(toc)
+            self.is_modified = True
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+
+    def add_bookmark(self, title, page, level=1):
+        bookmarks = self.get_bookmarks()
+        bookmarks.append((level, title, page))
+        return self.set_bookmarks(bookmarks)
+
+    def update_bookmark(self, index, title=None, page=None, level=None):
+        bookmarks = self.get_bookmarks()
+        if not 0 <= index < len(bookmarks):
+            return False
+        old_level, old_title, old_page = bookmarks[index]
+        bookmarks[index] = (level if level is not None else old_level,
+                            title if title is not None else old_title,
+                            page if page is not None else old_page)
+        return self.set_bookmarks(bookmarks)
+
+    def remove_bookmark(self, index):
+        bookmarks = self.get_bookmarks()
+        if not 0 <= index < len(bookmarks):
+            return False
+        bookmarks.pop(index)
+        return self.set_bookmarks(bookmarks)
+
+    # Embedded file attachments
+    def list_attachments(self):
+        if not self.doc:
+            return []
+        attachments = []
+        for name in self.doc.embfile_names():
+            info = self.doc.embfile_info(name)
+            attachments.append({
+                "name": name,
+                "filename": info.get("filename") or name,
+                "description": info.get("desc") or "",
+                "size": info.get("size", 0),
+                "creation_date": info.get("creationDate", ""),
+                "modification_date": info.get("modDate", ""),
+            })
+        return attachments
+
+    def add_attachment(self, filepath, name=None, description=""):
+        if not self.doc or not os.path.isfile(filepath):
+            return False
+        try:
+            with open(filepath, "rb") as handle:
+                data = handle.read()
+            attachment_name = name or os.path.basename(filepath)
+            self._save_undo_state()
+            self.doc.embfile_add(attachment_name, data,
+                                 filename=os.path.basename(filepath),
+                                 desc=description or None)
+            self.is_modified = True
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+
+    def extract_attachment(self, name, output_path):
+        if not self.doc:
+            return False
+        try:
+            info = self.doc.embfile_info(name)
+            with open(output_path, "wb") as handle:
+                handle.write(info["file"])
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+
+    def remove_attachment(self, name):
+        if not self.doc:
+            return False
+        try:
+            self._save_undo_state()
+            self.doc.embfile_del(name)
+            self.is_modified = True
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
     
     # Form fields
     def get_form_fields(self, page_num=None):
@@ -1269,10 +1629,68 @@ class PDFDocument:
         if page:
             for widget in page.widgets():
                 if widget.field_name == name:
-                    widget.field_value = value
+                    if widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
+                        widget.field_value = bool(value)
+                    else:
+                        widget.field_value = str(value)
                     widget.update()
                     self.is_modified = True
                     return True
+        return False
+
+    def add_form_field(self, page_num, name, rect, field_type="text", value="",
+                       options=None, required=False, font_size=11):
+        """Add an AcroForm field to a page.
+
+        ``field_type`` accepts text, checkbox, radio, combo, list, or
+        signature.  ``options`` supplies choices for combo/list fields.
+        """
+        page = self.get_page(page_num)
+        if not page or not name:
+            return False
+        types = {
+            "text": fitz.PDF_WIDGET_TYPE_TEXT,
+            "checkbox": fitz.PDF_WIDGET_TYPE_CHECKBOX,
+            "radio": fitz.PDF_WIDGET_TYPE_RADIOBUTTON,
+            "combo": fitz.PDF_WIDGET_TYPE_COMBOBOX,
+            "list": fitz.PDF_WIDGET_TYPE_LISTBOX,
+            "signature": fitz.PDF_WIDGET_TYPE_SIGNATURE,
+        }
+        widget_type = types.get(str(field_type).lower())
+        if widget_type is None:
+            return False
+        try:
+            self._save_undo_state()
+            widget = fitz.Widget()
+            widget.field_name = name
+            widget.field_type = widget_type
+            widget.rect = fitz.Rect(rect)
+            widget.field_value = bool(value) if widget_type == fitz.PDF_WIDGET_TYPE_CHECKBOX else str(value or "")
+            widget.field_flags = 2 if required else 0
+            widget.text_fontsize = float(font_size)
+            if options and widget_type in (fitz.PDF_WIDGET_TYPE_COMBOBOX,
+                                           fitz.PDF_WIDGET_TYPE_LISTBOX):
+                widget.choice_values = [str(option) for option in options]
+            page.add_widget(widget)
+            self.is_modified = True
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+
+    def remove_form_field(self, page_num, name):
+        page = self.get_page(page_num)
+        if not page:
+            return False
+        try:
+            for widget in page.widgets() or []:
+                if widget.field_name == name:
+                    self._save_undo_state()
+                    page.delete_widget(widget)
+                    self.is_modified = True
+                    return True
+        except Exception as exc:
+            self.last_error = str(exc)
         return False
     
     # Document operations
@@ -1285,17 +1703,64 @@ class PDFDocument:
                 pass
         return False
     
-    def add_watermark(self, text, font_size=48, color=(0.8, 0.8, 0.8), angle=45):
-        if not self.doc:
-            return
-        self._save_undo_state()
-        for page in self.doc:
-            rect = page.rect
-            cx, cy = rect.width / 2, rect.height / 2
-            text_width = len(text) * font_size * 0.5
-            page.insert_text(fitz.Point(cx - text_width/2, cy), text,
-                           fontsize=font_size, fontname="helv", color=color, rotate=angle)
-        self.is_modified = True
+    def add_watermark(self, text=None, font_size=48, color=(0.8, 0.8, 0.8),
+                      angle=45, image_path=None, pages=None, opacity=0.28,
+                      scale=0.6):
+        """Apply a text or image watermark to selected pages.
+
+        ``pages`` is zero-based and defaults to every page.  MuPDF's native
+        rotation is limited to quarter turns, so arbitrary text angles are
+        rounded to the closest supported PDF text rotation.
+        """
+        if not self.doc or (not text and not image_path):
+            return False
+        page_numbers = list(range(self.page_count)) if pages is None else sorted({
+            int(page) for page in pages if 0 <= int(page) < self.page_count
+        })
+        if not page_numbers:
+            return False
+        try:
+            self._save_undo_state()
+            normalized_color = tuple(c / 255 for c in color) if max(color) > 1 else color
+            rotation = (int(round(float(angle) / 90.0)) * 90) % 360
+            if image_path:
+                with Image.open(image_path) as source:
+                    image = source.convert("RGBA")
+                    if opacity < 1:
+                        alpha = image.getchannel("A").point(
+                            lambda value: int(value * max(0.0, min(1.0, opacity))))
+                        image.putalpha(alpha)
+                    image_stream = io.BytesIO()
+                    image.save(image_stream, format="PNG")
+                    image_bytes = image_stream.getvalue()
+                    iw, ih = image.size
+                for page_num in page_numbers:
+                    page = self.doc[page_num]
+                    pw, ph = page.rect.width, page.rect.height
+                    width = min(pw * scale, max(1.0, float(iw)))
+                    height = width * ih / max(1, iw)
+                    if height > ph * scale:
+                        height = ph * scale
+                        width = height * iw / max(1, ih)
+                    rect = fitz.Rect((pw - width) / 2, (ph - height) / 2,
+                                     (pw + width) / 2, (ph + height) / 2)
+                    page.insert_image(rect, stream=image_bytes, alpha=0,
+                                      rotate=rotation, overlay=True)
+            else:
+                for page_num in page_numbers:
+                    page = self.doc[page_num]
+                    rect = page.rect
+                    cx, cy = rect.width / 2, rect.height / 2
+                    text_width = fitz.get_text_length(str(text), fontsize=font_size)
+                    page.insert_text(fitz.Point(cx - text_width / 2, cy), str(text),
+                                     fontsize=font_size, fontname="helv",
+                                     color=normalized_color, rotate=rotation,
+                                     fill_opacity=max(0.0, min(1.0, opacity)))
+            self.is_modified = True
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
     
     def add_header_footer(self, header=None, footer=None, font_size=10, margin=36):
         if not self.doc:
@@ -1308,7 +1773,11 @@ class PDFDocument:
             def process(txt):
                 if not txt:
                     return None
-                return txt.replace("{page}", str(page_num)).replace("{pages}", str(len(self.doc))).replace("{date}", datetime.now().strftime("%Y-%m-%d"))
+                return (txt.replace("{page}", str(page_num))
+                        .replace("{pages}", str(len(self.doc)))
+                        .replace("{total}", str(len(self.doc)))
+                        .replace("{date}", datetime.now().strftime("%Y-%m-%d"))
+                        .replace("{time}", datetime.now().strftime("%H:%M")))
             
             if header:
                 h = process(header)
@@ -1393,28 +1862,155 @@ class PDFDocument:
                 for i in range(len(self.doc)):
                     f.write(f"--- Page {i+1} ---\n{self.get_text(i)}\n\n")
             return True
-        except:
+        except Exception as exc:
+            self.last_error = str(exc)
             return False
+
+    def export_markdown(self, output_path):
+        """Export page text as readable Markdown with stable page anchors."""
+        if not self.doc:
+            return False
+        try:
+            with open(output_path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(f"# {self.filename}\n\n")
+                for page_num in range(self.page_count):
+                    handle.write(f"## Page {page_num + 1}\n\n")
+                    text = self.get_text(page_num).strip()
+                    handle.write(text + "\n\n" if text else "_No extractable text._\n\n")
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+
+    def compare(self, other):
+        """Return per-page text and raster-difference information."""
+        if isinstance(other, PDFDocument):
+            other_doc = other
+            close_other = False
+        else:
+            other_doc = PDFDocument()
+            if not other_doc.open(other):
+                return {"pages": [], "changed_pages": [], "error": other_doc.last_error}
+            close_other = True
+        try:
+            page_count = max(self.page_count, other_doc.page_count)
+            pages = []
+            for page_num in range(page_count):
+                left = self.get_text(page_num) if page_num < self.page_count else ""
+                right = other_doc.get_text(page_num) if page_num < other_doc.page_count else ""
+                opcodes = difflib.SequenceMatcher(None, left, right).get_opcodes()
+                text_changed = left != right
+                image_changed = False
+                if page_num < self.page_count and page_num < other_doc.page_count:
+                    left_image = self.render_page(page_num, zoom=0.5)
+                    right_image = other_doc.render_page(page_num, zoom=0.5)
+                    if left_image and right_image:
+                        if left_image.size != right_image.size:
+                            image_changed = True
+                        else:
+                            left_pixels = list(left_image.getdata())
+                            right_pixels = list(right_image.getdata())
+                            changed_pixels = sum(a != b for a, b in zip(left_pixels, right_pixels))
+                            image_changed = changed_pixels > max(1, len(left_pixels) // 1000)
+                else:
+                    image_changed = True
+                pages.append({
+                    "page": page_num,
+                    "text_changed": text_changed,
+                    "image_changed": image_changed,
+                    "left_text": left,
+                    "right_text": right,
+                    "opcodes": opcodes,
+                })
+            return {
+                "pages": pages,
+                "changed_pages": [item["page"] for item in pages
+                                  if item["text_changed"] or item["image_changed"]],
+                "added_pages": max(0, other_doc.page_count - self.page_count),
+                "removed_pages": max(0, self.page_count - other_doc.page_count),
+            }
+        finally:
+            if close_other:
+                other_doc.close()
+
+    def create_comparison_pdf(self, other, output_path):
+        """Create a side-by-side PDF with changed-page markers."""
+        if not self.doc:
+            return False
+        if isinstance(other, PDFDocument):
+            other_doc = other
+            close_other = False
+        else:
+            other_doc = PDFDocument()
+            if not other_doc.open(other):
+                self.last_error = other_doc.last_error
+                return False
+            close_other = True
+        comparison = self.compare(other_doc)
+        result = fitz.open()
+        try:
+            for item in comparison["pages"]:
+                page_num = item["page"]
+                left_page = self.get_page(page_num)
+                right_page = other_doc.get_page(page_num)
+                left_rect = left_page.rect if left_page else fitz.Rect(0, 0, 612, 792)
+                right_rect = right_page.rect if right_page else left_rect
+                margin = 24
+                header = 28
+                width = left_rect.width + right_rect.width + margin * 3
+                height = max(left_rect.height, right_rect.height) + header + margin * 2
+                page = result.new_page(width=width, height=height)
+                page.insert_text((margin, margin + 12),
+                                 f"Page {page_num + 1} — {'CHANGED' if page_num in comparison['changed_pages'] else 'unchanged'}",
+                                 fontsize=11, color=(0.75, 0.1, 0.1) if page_num in comparison['changed_pages'] else (0.1, 0.45, 0.2))
+                left_box = fitz.Rect(margin, margin + header,
+                                     margin + left_rect.width, margin + header + left_rect.height)
+                right_x = margin * 2 + left_rect.width
+                right_box = fitz.Rect(right_x, margin + header,
+                                      right_x + right_rect.width, margin + header + right_rect.height)
+                if left_page:
+                    page.show_pdf_page(left_box, self.doc, page_num)
+                if right_page:
+                    page.show_pdf_page(right_box, other_doc.doc, page_num)
+            result.save(output_path, garbage=4, deflate=True, clean=True)
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+        finally:
+            result.close()
+            if close_other:
+                other_doc.close()
     
     def merge_pdf(self, other_path):
         if self.doc:
-            self._save_undo_state()
-            other = fitz.open(other_path)
-            self.doc.insert_pdf(other)
-            other.close()
-            self.is_modified = True
-    
-    def split_pages(self, output_dir):
+            try:
+                self._save_undo_state()
+                other = fitz.open(other_path)
+                self.doc.insert_pdf(other)
+                other.close()
+                self.is_modified = True
+                return True
+            except Exception as exc:
+                self.last_error = str(exc)
+        return False
+
+    def split_pages(self, output_dir, page_numbers=None, prefix="page"):
         files = []
         if not self.doc:
             return files
-        for i in range(len(self.doc)):
+        selected = (list(range(len(self.doc))) if page_numbers is None else
+                    sorted({int(p) for p in page_numbers
+                            if 0 <= int(p) < len(self.doc)}))
+        for output_index, page_num in enumerate(selected):
             new_doc = fitz.open()
-            new_doc.insert_pdf(self.doc, from_page=i, to_page=i)
-            path = os.path.join(output_dir, f"page_{i+1:03d}.pdf")
-            new_doc.save(path)
-            new_doc.close()
-            files.append(path)
+            try:
+                new_doc.insert_pdf(self.doc, from_page=page_num, to_page=page_num)
+                path = os.path.join(output_dir, f"{prefix}_{output_index + 1:03d}.pdf")
+                new_doc.save(path, garbage=4, deflate=True, clean=True)
+                files.append(path)
+            finally:
+                new_doc.close()
         return files
 
 # ============================================================================
