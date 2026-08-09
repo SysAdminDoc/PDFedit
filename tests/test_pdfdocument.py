@@ -1,5 +1,6 @@
 import fitz
 from pypdf import PdfReader, PdfWriter
+from PIL import Image
 
 from PDFedit import PDFDocument
 
@@ -103,3 +104,46 @@ def test_forms_attachments_markdown_and_compare(tmp_path):
     comparison = document.compare(str(changed))
     assert comparison["changed_pages"] == [0]
     document.close()
+
+
+def test_font_aware_edit_watermark_and_pressure_stroke(tmp_path):
+    source = tmp_path / "source.pdf"
+    output = tmp_path / "output.pdf"
+    watermark = tmp_path / "watermark.png"
+    make_pdf(source, ["old text"])
+    Image.new("RGBA", (20, 20), (255, 0, 0, 128)).save(watermark)
+
+    document = PDFDocument()
+    assert document.open(str(source))
+    block = document.get_text_blocks(0)[0]
+    assert document.edit_text(0, block.rect, block.text, "new text",
+                              font_size=block.font_size, color=block.color,
+                              font_name=block.font_name)
+    assert document.add_watermark(image_path=str(watermark), opacity=0.5, pages=[0])
+    document.add_freehand(0, [(20, 120, 0.2), (40, 125, 1.5), (70, 120, 0.8)])
+    assert document.save(str(output))
+    document.close()
+
+    reopened = PDFDocument()
+    assert reopened.open(str(output))
+    assert "new text" in reopened.get_text(0)
+    assert "old text" not in reopened.get_text(0)
+    reopened.close()
+
+
+def test_compression_protection_and_font_report(tmp_path):
+    source = tmp_path / "source.pdf"
+    compressed = tmp_path / "compressed.pdf"
+    protected = tmp_path / "protected.pdf"
+    make_pdf(source, ["protected"])
+    document = PDFDocument()
+    assert document.open(str(source))
+    assert document.font_report()
+    assert document.compress(str(compressed), preset="web")
+    assert document.protect(str(protected), "secret")
+    document.close()
+
+    encrypted = fitz.open(str(protected))
+    assert encrypted.needs_pass
+    assert encrypted.authenticate("secret")
+    encrypted.close()

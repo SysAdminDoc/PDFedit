@@ -236,6 +236,14 @@ def command_sign(args: argparse.Namespace) -> int:
         document.close()
 
 
+def command_verify(args: argparse.Namespace) -> int:
+    results, reason = PDFDocument.verify_signatures(args.input)
+    if reason:
+        raise RuntimeError(reason)
+    print(json.dumps(results, indent=2))
+    return 0
+
+
 def command_repair(args: argparse.Namespace) -> int:
     success, reason = PDFDocument.repair_file(args.input, args.output)
     if not success:
@@ -431,6 +439,10 @@ def build_parser() -> argparse.ArgumentParser:
     sign.add_argument("--reason")
     sign.add_argument("--location")
     sign.set_defaults(handler=command_sign)
+
+    verify = subparsers.add_parser("verify", help="verify embedded PDF signatures")
+    verify.add_argument("input")
+    verify.set_defaults(handler=command_verify)
 
     attachments = subparsers.add_parser("attachments", help="manage embedded files")
     attachments.add_argument("input")

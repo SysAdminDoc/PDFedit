@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-PDF Editor Pro v4.0 - Professional PDF Editing Suite
+PDF Editor Pro v0.2.0 - Professional PDF Editing Suite
 A comprehensive Adobe Acrobat Pro alternative with modern UI
 
-NEW IN v4.0:
+NEW IN v0.2.0:
 - Undo/Redo: Ctrl+Z to undo, Ctrl+Y to redo (up to 30 steps)
 - Auto OCR: Documents without searchable text are automatically OCR'd in background
 - Background processing: OCR runs without locking the UI, with progress bar
@@ -52,6 +52,7 @@ from datetime import datetime
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TESSERACT_DIR = os.path.join(SCRIPT_DIR, "tesseract_ocr")
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "pdf_editor_config")
+APP_VERSION = "0.2.0"
 TESSERACT_VERSION = "5.5.0"
 TESSERACT_DATE = "20241111"
 TESSERACT_URL = f"https://github.com/tesseract-ocr/tesseract/releases/download/{TESSERACT_VERSION}/tesseract-ocr-w64-setup-{TESSERACT_VERSION}.{TESSERACT_DATE}.exe"
@@ -98,7 +99,7 @@ def install_tesseract_windows():
                 print("    ✓ Tesseract installed")
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 return exe
-    except:
+    except Exception:
         pass
     shutil.rmtree(temp_dir, ignore_errors=True)
     return None
@@ -112,7 +113,7 @@ def pip_install(pkg):
         try:
             if subprocess.run(method, capture_output=True, timeout=120).returncode == 0:
                 return True
-        except:
+        except Exception:
             pass
     return False
 
@@ -120,7 +121,7 @@ def _try_import(name):
     try:
         __import__(name)
         return True
-    except:
+    except Exception:
         return False
 
 def check_and_install_dependencies():
@@ -132,7 +133,7 @@ def check_and_install_dependencies():
     
     if missing_req or missing_opt or tesseract_needed:
         print("\n╔══════════════════════════════════════════════════════════╗")
-        print("║         PDF Editor Pro v4.0 - First Run Setup            ║")
+        print(f"║       PDF Editor Pro v{APP_VERSION} - First Run Setup            ║")
         print("╚══════════════════════════════════════════════════════════╝\n")
         for pkg in missing_req + missing_opt:
             print(f"  Installing {pkg}...", end=" ", flush=True)
@@ -159,17 +160,15 @@ if __name__ == "__main__":
 # IMPORTS
 # ============================================================================
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, colorchooser
-from PIL import Image, ImageTk, ImageDraw
-import fitz
-import io
-import threading
-import math
-from dataclasses import dataclass
-from typing import Optional, List, Tuple, Dict, Callable, Any
-from enum import Enum, auto
-from collections import deque
+import tkinter as tk  # noqa: E402
+from tkinter import ttk, filedialog, messagebox  # noqa: E402
+from PIL import Image, ImageTk, ImageOps, ImageChops  # noqa: E402
+import fitz  # noqa: E402
+import io  # noqa: E402
+import threading  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
+from typing import Tuple  # noqa: E402
+from enum import Enum, auto  # noqa: E402
 
 try:
     from docx import Document as DocxDocument
@@ -280,7 +279,7 @@ class Config:
         try:
             with open(Config.get_config_path(), 'r') as f:
                 return json.load(f)
-        except:
+        except Exception:
             return {"recent_files": [], "window_geometry": "1500x900"}
     
     @staticmethod
@@ -288,7 +287,7 @@ class Config:
         try:
             with open(Config.get_config_path(), 'w') as f:
                 json.dump(data, f, indent=2)
-        except:
+        except Exception:
             pass
 
 # ============================================================================
@@ -466,11 +465,12 @@ class ToolbarButton(tk.Canvas):
     """Toolbar button with icon and optional label"""
     def __init__(self, parent, icon="", label="", command=None, toggle=False, 
                  tooltip="", size="normal", **kw):
-        self.size = 48 if size == "normal" else 36
+        self.base_size = 48 if size == "normal" else 36
+        self.size = self.base_size
         self.show_label = size == "normal" and label
-        height = 56 if self.show_label else self.size
+        self.button_height = 56 if self.show_label else self.size
         
-        super().__init__(parent, width=self.size, height=height,
+        super().__init__(parent, width=self.size, height=self.button_height,
                         bg=Theme.BG_SECONDARY, highlightthickness=0, **kw)
         
         self.icon = icon
@@ -492,21 +492,21 @@ class ToolbarButton(tk.Canvas):
         
         # Background
         if self.active:
-            self.create_rectangle(2, 2, self.size-2, self.size-2,
+            self.create_rectangle(2, 2, self.size-2, self.button_height-2,
                                  fill=Theme.ACCENT_MUTED, outline=Theme.ACCENT)
         elif self.hover:
-            self.create_rectangle(2, 2, self.size-2, self.size-2,
+            self.create_rectangle(2, 2, self.size-2, self.button_height-2,
                                  fill=Theme.BG_HOVER, outline="")
         
         # Icon
-        icon_y = 20 if self.show_label else self.size // 2
+        icon_y = self.button_height // 3 if self.show_label else self.button_height // 2
         fg = Theme.ACCENT_LIGHT if self.active else (Theme.FG_PRIMARY if self.hover else Theme.FG_SECONDARY)
         self.create_text(self.size//2, icon_y, text=self.icon, fill=fg,
                         font=(Theme.FONT_FAMILY, 16))
         
         # Label
         if self.show_label:
-            self.create_text(self.size//2, 42, text=self.label, fill=Theme.FG_MUTED,
+            self.create_text(self.size//2, self.button_height - 14, text=self.label, fill=Theme.FG_MUTED,
                            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_XS))
     
     def _on_enter(self, e):
@@ -537,6 +537,13 @@ class ToolbarButton(tk.Canvas):
     
     def set_active(self, active):
         self.active = active
+        self._draw()
+
+    def set_touch_mode(self, enabled):
+        """Increase hit targets without changing the document or canvas scale."""
+        self.size = 64 if enabled and self.base_size >= 48 else (48 if enabled else self.base_size)
+        self.button_height = 72 if enabled and self.show_label else self.size
+        self.configure(width=self.size, height=self.button_height)
         self._draw()
 
 class ToolbarSeparator(tk.Frame):
@@ -1166,10 +1173,39 @@ class PDFDocument:
         if isinstance(color_int, (list, tuple)):
             return tuple(color_int)
         # Convert integer to RGB
-        b = (color_int >> 16) & 0xFF
+        r = (color_int >> 16) & 0xFF
         g = (color_int >> 8) & 0xFF
-        r = color_int & 0xFF
+        b = color_int & 0xFF
         return (r/255, g/255, b/255)
+
+    def _resolve_text_font(self, page, font_name):
+        """Reuse an embedded source font when PyMuPDF can extract it."""
+        if not font_name:
+            return "helv"
+        normalized = str(font_name).lower()
+        builtins = {
+            "helvetica": "helv", "arial": "helv", "times": "tiro",
+            "times-roman": "tiro", "courier": "cour", "symbol": "symb",
+            "zapfdingbats": "zapfdingbats",
+        }
+        for name, replacement in builtins.items():
+            if name in normalized:
+                return replacement
+        try:
+            for font in page.get_fonts(full=True):
+                xref, _, _, basefont, resource_name = font[:5]
+                candidates = {str(basefont).lower(), str(resource_name).lower()}
+                if normalized not in candidates and not any(normalized in candidate for candidate in candidates):
+                    continue
+                extracted = self.doc.extract_font(xref)
+                font_buffer = extracted[3] if extracted and len(extracted) > 3 else None
+                if font_buffer:
+                    alias = f"pdfedit_font_{xref}"
+                    page.insert_font(fontname=alias, fontbuffer=font_buffer)
+                    return alias
+        except Exception:
+            pass
+        return "helv"
     
     def get_text_at_point(self, page_num, x, y):
         """Find text block at a specific point"""
@@ -1180,8 +1216,9 @@ class PDFDocument:
                 return block
         return None
     
-    def edit_text(self, page_num, old_rect, old_text, new_text, font_size=None, color=None):
-        """Edit text in place by redacting old and inserting new"""
+    def edit_text(self, page_num, old_rect, old_text, new_text, font_size=None,
+                  color=None, font_name=None):
+        """Edit text while reusing the source font when it is embeddable."""
         page = self.get_page(page_num)
         if not page:
             return False
@@ -1208,14 +1245,17 @@ class PDFDocument:
                 x = old_rect[0]
                 y = old_rect[3] - 2  # Slightly above bottom
                 
-                page.insert_text(
-                    (x, y),
-                    new_text,
-                    fontsize=fs,
-                    fontname="helv",
-                    color=text_color
-                )
+                resolved_font = self._resolve_text_font(page, font_name)
+                try:
+                    page.insert_text((x, y), new_text, fontsize=fs,
+                                     fontname=resolved_font, color=text_color)
+                except Exception:
+                    # A malformed embedded font should not make the text
+                    # editor unusable; fall back to a standard PDF font.
+                    page.insert_text((x, y), new_text, fontsize=fs,
+                                     fontname="helv", color=text_color)
             
+            self.requires_full_save = True
             self.is_modified = True
             return True
         except Exception as e:
@@ -1233,9 +1273,10 @@ class PDFDocument:
             r = fitz.Rect(rect) + (-1, -1, 1, 1)
             page.add_redact_annot(r, fill=(1, 1, 1))
             page.apply_redactions()
+            self.requires_full_save = True
             self.is_modified = True
             return True
-        except:
+        except Exception:
             return False
     
     def insert_text_block(self, page_num, x, y, text, font_size=12, color=(0, 0, 0)):
@@ -1249,7 +1290,7 @@ class PDFDocument:
             page.insert_text((x, y), text, fontsize=font_size, fontname="helv", color=color)
             self.is_modified = True
             return True
-        except:
+        except Exception:
             return False
     
     def has_text(self):
@@ -1390,10 +1431,23 @@ class PDFDocument:
         page = self.get_page(page_num)
         if page and len(points) >= 2:
             self._save_undo_state()
-            annot = page.add_ink_annot([points])
-            annot.set_colors(stroke=color)
-            annot.set_border(width=width)
-            annot.update()
+            has_pressure = any(len(point) > 2 for point in points)
+            if has_pressure:
+                # Tk tablet events expose a normalized pressure value on
+                # supported platforms.  Render pressure as short line
+                # segments so the resulting stroke remains a real PDF edit.
+                for first, second in zip(points, points[1:]):
+                    pressure = max(0.15, min(2.0, float(first[2] if len(first) > 2 else 1.0)))
+                    shape = page.new_shape()
+                    shape.draw_line(fitz.Point(first[0], first[1]),
+                                    fitz.Point(second[0], second[1]))
+                    shape.finish(color=color, width=max(0.5, width * pressure))
+                    shape.commit()
+            else:
+                annot = page.add_ink_annot([points])
+                annot.set_colors(stroke=color)
+                annot.set_border(width=width)
+                annot.update()
             self.is_modified = True
     
     def add_image(self, page_num, image_path, x=None, y=None, width=None, height=None):
@@ -1418,7 +1472,7 @@ class PDFDocument:
             page.insert_image(fitz.Rect(x, y, x+width, y+height), filename=image_path)
             self.is_modified = True
             return True
-        except:
+        except Exception:
             return False
 
     def get_page_images(self, page_num):
@@ -1679,6 +1733,50 @@ class PDFDocument:
                         'rect': tuple(widget.rect), 'widget': widget
                     })
         return fields
+
+    def get_xfa_data(self):
+        """Read XFA packet XML when a PDF contains an XFA form."""
+        if not self.doc:
+            return {}
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(self.doc.tobytes(garbage=0)))
+            acro_form = reader.trailer["/Root"].get("/AcroForm")
+            if not acro_form:
+                return {}
+            acro_form = acro_form.get_object()
+            xfa = acro_form.get("/XFA")
+            if not xfa:
+                return {}
+            if hasattr(xfa, "get_object"):
+                xfa = xfa.get_object()
+            packets = {}
+            if isinstance(xfa, list):
+                pairs = xfa
+                for index in range(0, len(pairs) - 1, 2):
+                    packet_name = str(pairs[index])
+                    packet = pairs[index + 1].get_object()
+                    packets[packet_name] = packet.get_data().decode("utf-8", errors="replace")
+            else:
+                packets["xfa"] = xfa.get_data().decode("utf-8", errors="replace")
+            return packets
+        except Exception:
+            return {}
+
+    def get_xfa_fields(self):
+        """Return leaf XFA XML values as a simple field-name mapping."""
+        import xml.etree.ElementTree as element_tree
+        fields = {}
+        for packet_name, xml in self.get_xfa_data().items():
+            try:
+                root = element_tree.fromstring(xml)
+            except element_tree.ParseError:
+                continue
+            for node in root.iter():
+                if node.text and not list(node):
+                    name = node.tag.rsplit("}", 1)[-1]
+                    fields[f"{packet_name}.{name}"] = node.text.strip()
+        return fields
     
     def set_form_field(self, page_num, name, value):
         page = self.get_page(page_num)
@@ -1750,10 +1848,19 @@ class PDFDocument:
         return False
     
     # Document operations
-    def compress(self, output_path):
+    def compress(self, output_path, preset="balanced"):
+        """Rewrite a PDF using a named web/print/archive compression preset."""
         if self.doc:
             try:
-                self.doc.save(output_path, garbage=4, deflate=True, clean=True, linear=True)
+                presets = {
+                    "web": {"deflate_images": True, "deflate_fonts": True},
+                    "print": {"deflate_images": True, "deflate_fonts": True},
+                    "archive": {"deflate_images": False, "deflate_fonts": True},
+                    "balanced": {"deflate_images": True, "deflate_fonts": True},
+                }
+                options = presets.get(str(preset).lower(), presets["balanced"])
+                self.doc.save(output_path, garbage=4, deflate=True, clean=True,
+                              **options)
                 return True
             except Exception as exc:
                 self.last_error = str(exc)
@@ -1821,6 +1928,31 @@ class PDFDocument:
                     pass
 
     @staticmethod
+    def verify_signatures(input_path):
+        """Validate embedded signatures and return concise status records."""
+        try:
+            from pyhanko.pdf_utils.reader import PdfFileReader
+            from pyhanko.sign.validation import validate_pdf_signature
+            with open(input_path, "rb") as handle:
+                reader = PdfFileReader(handle)
+                signatures = reader.embedded_signatures
+                results = []
+                for signature in signatures:
+                    status = validate_pdf_signature(signature, skip_diff=True)
+                    results.append({
+                        "field": signature.fq_name,
+                        "valid": bool(status.bottom_line),
+                        "intact": bool(status.intact),
+                        "cryptographically_valid": bool(status.valid),
+                        "trusted": bool(status.trusted),
+                        "coverage": str(status.coverage),
+                        "summary": status.summary(),
+                    })
+                return results, ""
+        except Exception as exc:
+            return [], str(exc)
+
+    @staticmethod
     def repair_file(input_path, output_path):
         """Re-save a damaged-but-readable PDF with rebuilt object streams."""
         document = None
@@ -1876,7 +2008,7 @@ class PDFDocument:
                         width = height * iw / max(1, ih)
                     rect = fitz.Rect((pw - width) / 2, (ph - height) / 2,
                                      (pw + width) / 2, (ph + height) / 2)
-                    page.insert_image(rect, stream=image_bytes, alpha=0,
+                    page.insert_image(rect, stream=image_bytes, alpha=-1,
                                       rotate=rotation, overlay=True)
             else:
                 for page_num in page_numbers:
@@ -1957,6 +2089,80 @@ class PDFDocument:
         if self.doc:
             self.doc.set_metadata(data)
             self.is_modified = True
+
+    def font_report(self):
+        """Report embedded and referenced fonts, including byte sizes."""
+        if not self.doc:
+            return []
+        report = {}
+        for page_num in range(self.page_count):
+            page = self.doc[page_num]
+            for font in page.get_fonts(full=True):
+                xref, ext, kind, basefont, resource_name = font[:5]
+                item = report.setdefault(xref, {
+                    "xref": xref,
+                    "name": str(basefont or resource_name),
+                    "resource": str(resource_name),
+                    "type": str(kind),
+                    "extension": ext,
+                    "pages": [],
+                    "embedded": False,
+                    "bytes": 0,
+                })
+                if page_num + 1 not in item["pages"]:
+                    item["pages"].append(page_num + 1)
+                try:
+                    extracted = self.doc.extract_font(xref)
+                    content = extracted[3] if extracted and len(extracted) > 3 else b""
+                    item["embedded"] = bool(content)
+                    item["bytes"] = len(content or b"")
+                except Exception:
+                    pass
+        return sorted(report.values(), key=lambda item: item["name"])
+
+    def embed_font(self, page_num, font_path):
+        """Embed a local font resource for subsequent text edits."""
+        page = self.get_page(page_num)
+        if not page or not os.path.isfile(font_path):
+            return False
+        try:
+            self._save_undo_state()
+            alias = f"pdfedit_embedded_{abs(hash(os.path.abspath(font_path))) % 1000000}"
+            page.insert_font(fontname=alias, fontfile=font_path)
+            self.is_modified = True
+            return alias
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+
+    def strip_unused_fonts(self, output_path):
+        """Remove unreferenced resources while preserving fonts in use."""
+        if not self.doc:
+            return False
+        try:
+            import pikepdf
+            source = self.filepath
+            temporary_source = None
+            if not source:
+                with tempfile.NamedTemporaryFile(prefix=".pdfedit-fonts-",
+                                                 suffix=".pdf", delete=False) as handle:
+                    temporary_source = handle.name
+                self.doc.save(temporary_source, garbage=4, deflate=True, clean=True)
+                source = temporary_source
+            with pikepdf.open(source) as pdf:
+                pdf.remove_unreferenced_resources()
+                pdf.save(output_path)
+            if temporary_source:
+                os.unlink(temporary_source)
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            if 'temporary_source' in locals() and temporary_source:
+                try:
+                    os.unlink(temporary_source)
+                except OSError:
+                    pass
+            return False
     
     def export_to_word(self, output_path):
         if not HAS_DOCX or not self.doc:
@@ -1971,7 +2177,7 @@ class PDFDocument:
                     doc.add_paragraph(text)
             doc.save(output_path)
             return True
-        except:
+        except Exception:
             return False
     
     def export_to_images(self, output_dir, dpi=150, fmt="png"):
@@ -2040,10 +2246,10 @@ class PDFDocument:
                         if left_image.size != right_image.size:
                             image_changed = True
                         else:
-                            left_pixels = list(left_image.getdata())
-                            right_pixels = list(right_image.getdata())
-                            changed_pixels = sum(a != b for a, b in zip(left_pixels, right_pixels))
-                            image_changed = changed_pixels > max(1, len(left_pixels) // 1000)
+                            difference = ImageChops.difference(left_image, right_image)
+                            thresholded = difference.convert("L").point(
+                                lambda value: 255 if value > 10 else 0)
+                            image_changed = thresholded.getbbox() is not None
                 else:
                     image_changed = True
                 pages.append({
@@ -2159,7 +2365,7 @@ class OCREngine:
             return True, "OK"
         except ImportError:
             return False, "pytesseract not installed"
-        except:
+        except Exception:
             return False, "Tesseract not found"
     
     @staticmethod
@@ -2169,7 +2375,7 @@ class OCREngine:
             if path := os.environ.get("TESSERACT_CMD"):
                 if os.path.exists(path):
                     pytesseract.pytesseract.tesseract_cmd = path
-        except:
+        except Exception:
             pass
     
     @staticmethod
@@ -2182,7 +2388,7 @@ class OCREngine:
         try:
             import pytesseract
             OCREngine._configure()
-        except:
+        except Exception:
             return False, 0
         
         if cancel_flag is None:
@@ -2234,7 +2440,7 @@ class OCREngine:
                             fs = max(4, min(72, fs * (pw_t / tl)))
                         page.insert_text((px, py + ph_t * 0.85), text, fontsize=fs,
                                         fontname="helv", color=(0, 0, 0), render_mode=3)
-                    except:
+                    except Exception:
                         pass
                 
                 processed += 1
@@ -2256,6 +2462,45 @@ class OCREngine:
         if not doc or not doc.doc:
             return False
         return not doc.has_text()
+
+
+class SpeechEngine:
+    """Small local text-to-speech adapter for reader mode."""
+
+    @staticmethod
+    def is_available():
+        if platform.system() == "Windows":
+            try:
+                import win32com.client  # noqa: F401
+                return True
+            except ImportError:
+                pass
+        try:
+            import pyttsx3  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    @staticmethod
+    def speak(text, rate=0):
+        if not text.strip():
+            return False
+        try:
+            if platform.system() == "Windows":
+                import win32com.client
+                voice = win32com.client.Dispatch("SAPI.SpVoice")
+                voice.Rate = int(rate)
+                voice.Speak(text)
+                return True
+            import pyttsx3
+            engine = pyttsx3.init()
+            if rate:
+                engine.setProperty("rate", int(rate))
+            engine.say(text)
+            engine.runAndWait()
+            return True
+        except Exception:
+            return False
 
 # ============================================================================
 # MAIN APPLICATION
@@ -2279,6 +2524,8 @@ class PDFEditorPro(tk.Tk):
         self.thumbnail_drag_source = None
         self.thumbnail_dragging = False
         self.zoom = 1.0
+        self.dark_preview = False
+        self.touch_mode = False
         self.tool_mode = ToolMode.SELECT
         self.draw_color = (0, 0, 0)
         self.draw_points = []
@@ -2363,6 +2610,8 @@ class PDFEditorPro(tk.Tk):
         view_menu.add_command(label="Zoom Out", command=self._zoom_out, accelerator="Ctrl+-")
         view_menu.add_command(label="Fit Page", command=self._zoom_fit)
         view_menu.add_command(label="Actual Size", command=self._zoom_100)
+        view_menu.add_checkbutton(label="Dark Page Preview", command=self._toggle_dark_preview)
+        view_menu.add_checkbutton(label="Touch-friendly Controls", command=self._toggle_touch_mode)
         view_menu.add_separator()
         view_menu.add_command(label="Rotate CW", command=lambda: self._rotate(90))
         view_menu.add_command(label="Rotate CCW", command=lambda: self._rotate(-90))
@@ -2411,9 +2660,13 @@ class PDFEditorPro(tk.Tk):
         doc_menu.add_command(label="Compress...", command=self._compress_doc)
         doc_menu.add_command(label="Password Protect...", command=self._password_dialog)
         doc_menu.add_command(label="Digital Signature...", command=self._signature_dialog)
+        doc_menu.add_command(label="Verify Signatures", command=self._verify_signatures)
+        doc_menu.add_command(label="Read Page Aloud", command=self._read_page_aloud)
         doc_menu.add_command(label="Compare with PDF...", command=self._compare_dialog)
         doc_menu.add_command(label="Attachments...", command=self._attachment_dialog)
         doc_menu.add_command(label="Edit Bookmarks...", command=self._bookmark_editor)
+        doc_menu.add_command(label="Font Report...", command=self._font_report_dialog)
+        doc_menu.add_command(label="Repair PDF Copy...", command=self._repair_dialog)
         menubar.add_cascade(label="Document", menu=doc_menu)
         
         # Export
@@ -3202,6 +3455,10 @@ class PDFEditorPro(tk.Tk):
         img = self.doc.render_page(self.current_page, self.zoom)
         if not img:
             return
+        if self.dark_preview:
+            # This is a display-only transform; PDF bytes and saved output
+            # remain unchanged.
+            img = ImageOps.invert(img.convert("RGB"))
         
         self.page_image = ImageTk.PhotoImage(img)
         self.canvas.delete("all")
@@ -3412,7 +3669,7 @@ class PDFEditorPro(tk.Tk):
         try:
             p = int(self.page_entry.get()) - 1
             self._goto_page(p)
-        except:
+        except Exception:
             pass
     
     # =========================================================================
@@ -3443,6 +3700,23 @@ class PDFEditorPro(tk.Tk):
         self.zoom = min(cw / pw, ch / ph, Config.MAX_ZOOM)
         self._render_page()
         self._update_ui()
+
+    def _toggle_dark_preview(self):
+        self.dark_preview = not self.dark_preview
+        self._render_page()
+        self._status("Dark page preview on" if self.dark_preview else "Dark page preview off")
+
+    def _toggle_touch_mode(self):
+        self.touch_mode = not self.touch_mode
+
+        def visit(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, ToolbarButton):
+                    child.set_touch_mode(self.touch_mode)
+                visit(child)
+
+        visit(self)
+        self._status("Touch-friendly controls on" if self.touch_mode else "Touch-friendly controls off")
     
     def _canvas_scroll(self, e):
         if e.state & 0x4:  # Ctrl
@@ -3500,7 +3774,12 @@ class PDFEditorPro(tk.Tk):
         cx = self.canvas.canvasx(e.x)
         cy = self.canvas.canvasy(e.y)
         self.drag_start = (cx, cy)
-        self.draw_points = [(cx, cy)]
+        pressure = getattr(e, "pressure", 1.0)
+        try:
+            pressure = float(pressure)
+        except (TypeError, ValueError):
+            pressure = 1.0
+        self.draw_points = [(cx, cy, pressure)]
         
         px, py = self._canvas_to_pdf(cx, cy)
         
@@ -3535,7 +3814,7 @@ class PDFEditorPro(tk.Tk):
                 if not (editor_x <= cx <= editor_x + editor_w and editor_y <= cy <= editor_y + editor_h):
                     self._finish_inline_edit(apply=True)
                     return
-            except:
+            except Exception:
                 pass
         
         if self.tool_mode == ToolMode.TEXT:
@@ -3633,10 +3912,16 @@ class PDFEditorPro(tk.Tk):
             self.canvas.xview_scroll(int(-dx/15), "units")
             self.canvas.yview_scroll(int(-dy/15), "units")
         elif self.tool_mode == ToolMode.DRAW:
-            self.draw_points.append((cx, cy))
+            pressure = getattr(e, "pressure", 1.0)
+            try:
+                pressure = float(pressure)
+            except (TypeError, ValueError):
+                pressure = 1.0
+            self.draw_points.append((cx, cy, pressure))
             if len(self.draw_points) >= 2:
                 self.canvas.create_line(self.draw_points[-2][0], self.draw_points[-2][1],
-                                       cx, cy, fill="#000000", width=2, tags="temp")
+                                       cx, cy, fill="#000000",
+                                       width=3 if self.touch_mode else 2, tags="temp")
         elif self.tool_mode in (ToolMode.RECTANGLE, ToolMode.CIRCLE, ToolMode.LINE,
                                ToolMode.ARROW, ToolMode.HIGHLIGHT, ToolMode.UNDERLINE,
                                ToolMode.STRIKETHROUGH, ToolMode.REDACT, ToolMode.CROP):
@@ -3678,8 +3963,10 @@ class PDFEditorPro(tk.Tk):
         self.canvas.delete("temp")
         
         if self.tool_mode == ToolMode.DRAW and len(self.draw_points) >= 2:
-            pts = [self._canvas_to_pdf(p[0], p[1]) for p in self.draw_points]
-            self.doc.add_freehand(self.current_page, pts)
+            pts = [(*self._canvas_to_pdf(p[0], p[1]), p[2] if len(p) > 2 else 1.0)
+                   for p in self.draw_points]
+            self.doc.add_freehand(self.current_page, pts,
+                                  width=3 if self.touch_mode else 2)
             self._render_page()
         elif self.tool_mode == ToolMode.RECTANGLE:
             self.doc.add_rect(self.current_page, rect)
@@ -4016,7 +4303,7 @@ class PDFEditorPro(tk.Tk):
     def _password_dialog(self):
         if not self.doc:
             return
-        dialog = self._create_dialog("Password Protection", 350, 200)
+        dialog = self._create_dialog("Password Protection", 390, 360)
         
         tk.Label(dialog, text="Password:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_LG, Theme.PAD_XS))
         pass_entry = tk.Entry(dialog, show="*", width=25, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
@@ -4025,6 +4312,26 @@ class PDFEditorPro(tk.Tk):
         tk.Label(dialog, text="Confirm:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_XS))
         confirm_entry = tk.Entry(dialog, show="*", width=25, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY, relief=tk.FLAT)
         confirm_entry.pack(ipady=4)
+
+        tk.Label(dialog, text="Permissions:", bg=Theme.BG_SECONDARY,
+                 fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_XS))
+        permission_values = [
+            ("Print", fitz.PDF_PERM_PRINT),
+            ("High-quality print", fitz.PDF_PERM_PRINT_HQ),
+            ("Copy text", fitz.PDF_PERM_COPY),
+            ("Modify / annotate", fitz.PDF_PERM_MODIFY | fitz.PDF_PERM_ANNOTATE),
+            ("Fill forms", fitz.PDF_PERM_FORM),
+        ]
+        permission_vars = []
+        permissions_frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+        permissions_frame.pack(padx=Theme.PAD_LG)
+        for label, flag in permission_values:
+            value = tk.BooleanVar(value=True)
+            permission_vars.append((value, flag))
+            tk.Checkbutton(permissions_frame, text=label, variable=value,
+                           bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY,
+                           selectcolor=Theme.BG_INPUT, activebackground=Theme.BG_SECONDARY,
+                           activeforeground=Theme.FG_PRIMARY).pack(anchor="w")
         
         def apply():
             if pass_entry.get() != confirm_entry.get():
@@ -4032,7 +4339,11 @@ class PDFEditorPro(tk.Tk):
                 return
             output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
             if output:
-                if self.doc.protect(output, pass_entry.get()):
+                permissions = 0
+                for value, flag in permission_vars:
+                    if value.get():
+                        permissions |= flag
+                if self.doc.protect(output, pass_entry.get(), permissions=permissions):
                     dialog.destroy()
                     self._status("Protected PDF saved")
                 else:
@@ -4158,6 +4469,56 @@ class PDFEditorPro(tk.Tk):
             elif output:
                 messagebox.showerror("Compare", self.doc.last_error or "Unable to save comparison")
 
+    def _repair_dialog(self):
+        if not self.doc or not self.doc.filepath:
+            messagebox.showinfo("Repair PDF", "Open a saved PDF before creating a repaired copy.")
+            return
+        output = filedialog.asksaveasfilename(defaultextension=".pdf",
+                                              filetypes=[("PDF", "*.pdf")],
+                                              initialfile=f"repaired_{self.doc.filename}")
+        if not output:
+            return
+        success, reason = PDFDocument.repair_file(self.doc.filepath, output)
+        if success:
+            self._status("Repaired PDF copy saved")
+            messagebox.showinfo("Repair PDF", "Repaired copy saved successfully.")
+        else:
+            messagebox.showerror("Repair PDF", reason or "Unable to repair PDF")
+
+    def _verify_signatures(self):
+        if not self.doc or not self.doc.filepath:
+            messagebox.showinfo("Signatures", "Open a saved PDF before verifying signatures.")
+            return
+        results, reason = PDFDocument.verify_signatures(self.doc.filepath)
+        if reason:
+            messagebox.showerror("Signatures", reason)
+            return
+        if not results:
+            messagebox.showinfo("Signatures", "No embedded signatures were found.")
+            return
+        lines = []
+        for item in results:
+            state = ("valid" if item["valid"] else
+                     "intact but untrusted" if item.get("cryptographically_valid") else "invalid")
+            trust = "trusted" if item["trusted"] else "untrusted"
+            lines.append(f"{item['field']}: {state}, {trust} ({item['coverage']})")
+        messagebox.showinfo("Signatures", "\n".join(lines))
+
+    def _read_page_aloud(self):
+        if not self.doc:
+            return
+        if not SpeechEngine.is_available():
+            messagebox.showinfo("Read Aloud", "No local text-to-speech engine is available.")
+            return
+        text = self.doc.get_text(self.current_page)
+        self._status("Reading page aloud…")
+
+        def speak():
+            success = SpeechEngine.speak(text)
+            self.after(0, lambda: self._status("Finished reading" if success else "Read aloud failed"))
+
+        threading.Thread(target=speak, daemon=True).start()
+
     def _attachment_dialog(self):
         if not self.doc:
             return
@@ -4203,6 +4564,39 @@ class PDFEditorPro(tk.Tk):
         ModernButton(buttons, text="Remove", command=remove, style="danger", width=90).pack(side=tk.LEFT, padx=3)
         ModernButton(buttons, text="Close", command=dialog.destroy, width=90).pack(side=tk.LEFT, padx=3)
         refresh()
+
+    def _font_report_dialog(self):
+        if not self.doc:
+            return
+        report = self.doc.font_report()
+        dialog = self._create_dialog("Font Report", 620, 380)
+        text = tk.Text(dialog, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY,
+                       insertbackground=Theme.FG_PRIMARY, relief=tk.FLAT,
+                       font=(Theme.FONT_MONO, Theme.FONT_SIZE_XS), wrap=tk.NONE)
+        text.pack(fill=tk.BOTH, expand=True, padx=Theme.PAD_LG, pady=Theme.PAD_LG)
+        if report:
+            for item in report:
+                status = "embedded" if item["embedded"] else "not embedded"
+                pages = ", ".join(str(page) for page in item["pages"])
+                text.insert(tk.END, f"{item['name']} — {status}, {item['bytes']} bytes, pages {pages}\n")
+        else:
+            text.insert(tk.END, "No fonts found.\n")
+        text.configure(state=tk.DISABLED)
+
+        def strip():
+            output = filedialog.asksaveasfilename(defaultextension=".pdf",
+                                                  filetypes=[("PDF", "*.pdf")],
+                                                  initialfile=f"fonts_{self.doc.filename}")
+            if output and self.doc.strip_unused_fonts(output):
+                self._status("Unused font resources removed")
+                messagebox.showinfo("Font Report", "Unused resources were removed from the output copy.")
+            elif output:
+                messagebox.showerror("Font Report", self.doc.last_error or "Unable to strip unused resources")
+
+        buttons = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+        buttons.pack(pady=(0, Theme.PAD_LG))
+        ModernButton(buttons, text="Strip Unused", command=strip, width=115).pack(side=tk.LEFT, padx=3)
+        ModernButton(buttons, text="Close", command=dialog.destroy, width=90).pack(side=tk.LEFT, padx=3)
 
     def _bookmark_editor(self):
         if not self.doc:
@@ -4313,8 +4707,6 @@ class PDFEditorPro(tk.Tk):
         r = text_block.rect
         x1 = self.img_offset[0] + r[0] * self.zoom
         y1 = self.img_offset[1] + r[1] * self.zoom
-        x2 = self.img_offset[0] + r[2] * self.zoom
-        y2 = self.img_offset[1] + r[3] * self.zoom
         
         # Create frame to hold editor
         self.inline_editor_frame = tk.Frame(self.canvas, bg=Theme.ACCENT, padx=2, pady=2)
@@ -4335,10 +4727,6 @@ class PDFEditorPro(tk.Tk):
         self.inline_editor.pack()
         self.inline_editor.insert(0, text_block.text)
         self.inline_editor.select_range(0, tk.END)
-        
-        # Position on canvas
-        width = max(150, int(x2 - x1) + 50)
-        height = int(y2 - y1) + 8
         
         # Adjust position to account for canvas scrolling
         canvas_x = x1 - 2
@@ -4423,13 +4811,15 @@ class PDFEditorPro(tk.Tk):
                             block.rect,
                             block.text,
                             new_text,
-                            font_size=block.font_size
+                            font_size=block.font_size,
+                            color=block.color,
+                            font_name=block.font_name
                         )
                         # Clear cache for this page
                         cache_key = f"{self.active_doc_id}_{self.current_page}"
                         if cache_key in self.text_blocks_cache:
                             del self.text_blocks_cache[cache_key]
-                        self._status(f"Text updated")
+                        self._status("Text updated")
                 else:
                     # Adding new text
                     x, y = self.inline_edit_new_pos
@@ -4463,7 +4853,7 @@ class PDFEditorPro(tk.Tk):
                 try:
                     self.canvas.delete(self.inline_editor_window)
                     self.inline_editor_frame.destroy()
-                except:
+                except Exception:
                     pass
             self.inline_editor = None
             self._render_page()
@@ -4833,13 +5223,29 @@ class PDFEditorPro(tk.Tk):
     def _compress_doc(self):
         if not self.doc:
             return
-        output = filedialog.asksaveasfilename(defaultextension=".pdf", initialname=f"compressed_{self.doc.filename}")
-        if output:
+        dialog = self._create_dialog("Compress PDF", 360, 190)
+        tk.Label(dialog, text="Preset:", bg=Theme.BG_SECONDARY,
+                 fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_LG, Theme.PAD_XS))
+        preset_var = tk.StringVar(value="balanced")
+        ttk.Combobox(dialog, textvariable=preset_var,
+                     values=["web", "print", "archive", "balanced"],
+                     state="readonly", width=16).pack()
+
+        def compress():
+            output = filedialog.asksaveasfilename(defaultextension=".pdf",
+                                                  initialfile=f"compressed_{self.doc.filename}")
+            if not output:
+                return
             orig_size = os.path.getsize(self.doc.filepath) if self.doc.filepath else 0
-            if self.doc.compress(output):
+            if self.doc.compress(output, preset_var.get()):
                 new_size = os.path.getsize(output)
                 savings = (1 - new_size / orig_size) * 100 if orig_size else 0
+                dialog.destroy()
                 messagebox.showinfo("Compressed", f"Original: {orig_size // 1024} KB\nCompressed: {new_size // 1024} KB\nSaved: {savings:.1f}%")
+            else:
+                messagebox.showerror("Compress", self.doc.last_error or "Unable to compress PDF")
+
+        ModernButton(dialog, text="Compress", command=compress, style="primary", width=120).pack(pady=Theme.PAD_LG)
     
     def _ocr_doc(self):
         if not self.doc:
@@ -4992,7 +5398,7 @@ TOOLS
     
     def _show_about(self):
         messagebox.showinfo("About",
-            "PDF Editor Pro v4.0\n\n"
+            f"PDF Editor Pro v{APP_VERSION}\n\n"
             "Professional PDF Editing Suite\n\n"
             "Features:\n"
             "• Multi-document tabs\n"
@@ -5020,7 +5426,7 @@ TOOLS
         if hasattr(self, 'inline_editor') and self.inline_editor:
             try:
                 self._finish_inline_edit(apply=False)
-            except:
+            except Exception:
                 pass
         
         for doc in self.documents.values():
@@ -5052,7 +5458,7 @@ def main():
     try:
         from ctypes import windll
         windll.shcore.SetProcessDpiAwareness(1)
-    except:
+    except Exception:
         pass
     
     # Configure ttk styles

@@ -6,6 +6,7 @@ A simple PDF editor.
 
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
+![Version](https://img.shields.io/badge/version-0.2.0-blue)
 ![Language](https://img.shields.io/badge/language-Python-3776AB)
 ![Type](https://img.shields.io/badge/type-Desktop%20App-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
