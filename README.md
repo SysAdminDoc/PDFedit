@@ -10,7 +10,7 @@ A simple PDF editor.
 ![Type](https://img.shields.io/badge/type-Desktop%20App-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 
-A focused PDF editor built with Python and PyQt6. View, rearrange, merge, split, and annotate PDF files with a clean dark-themed desktop interface. No subscription, no cloud upload — runs entirely local.
+A focused PDF editor built with Python, Tkinter, and PyMuPDF. View, rearrange, merge, split, and annotate PDF files with a clean dark-themed desktop interface. No subscription, no cloud upload — runs entirely local.
 
 ## Quick Start
 
@@ -51,6 +51,20 @@ Drag and drop a PDF onto the window, or use **File → Open**.
 ### Reordering Pages
 
 In the page panel on the left, drag page thumbnails to the desired order, then **File → Save As** to write the reordered PDF.
+
+### Headless workflows
+
+Repeatable operations are available without opening the desktop window:
+
+```bash
+python pdfedit_cli.py merge first.pdf second.pdf -o merged.pdf
+python pdfedit_cli.py split input.pdf -o pages --pages 1-3,7
+python pdfedit_cli.py redact input.pdf -o redacted.pdf --page 2 --text "private"
+python pdfedit_cli.py ocr scan.pdf -o searchable.pdf
+```
+
+Run `python pdfedit_cli.py --help` for comparison, encryption, signatures,
+attachments, watermarks, recipes, and folder-watch processing.
 
 ## Requirements
 

@@ -1699,9 +1699,85 @@ class PDFDocument:
             try:
                 self.doc.save(output_path, garbage=4, deflate=True, clean=True, linear=True)
                 return True
-            except:
-                pass
+            except Exception as exc:
+                self.last_error = str(exc)
         return False
+
+    def protect(self, output_path, user_password, owner_password=None,
+                permissions=None):
+        """Write an AES-256 encrypted copy of the document."""
+        if not self.doc or not user_password:
+            return False
+        try:
+            owner_password = owner_password or user_password
+            encryption = getattr(fitz, "PDF_ENCRYPT_AES_256", fitz.PDF_ENCRYPT_AES_128)
+            permission_flags = permissions if permissions is not None else 4095
+            self.doc.save(output_path, garbage=4, deflate=True, clean=True,
+                          encryption=encryption, user_pw=str(user_password),
+                          owner_pw=str(owner_password), permissions=permission_flags)
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+
+    def sign(self, output_path, pkcs12_path, password, field_name="Signature",
+             page_num=0, rect=None, reason=None, location=None):
+        """Apply a visible PKCS#12 digital signature using pyHanko."""
+        if not self.doc or not pkcs12_path or not os.path.isfile(pkcs12_path):
+            return False
+        source_path = self.filepath
+        temporary_source = None
+        try:
+            from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+            from pyhanko.sign import fields, signers
+
+            if not source_path:
+                with tempfile.NamedTemporaryFile(prefix=".pdfedit-sign-",
+                                                 suffix=".pdf", delete=False) as handle:
+                    temporary_source = handle.name
+                self.doc.save(temporary_source, garbage=4, deflate=True, clean=True)
+                source_path = temporary_source
+            box = tuple(int(value) for value in (rect or (36, 36, 220, 96)))
+            signer = signers.SimpleSigner.load_pkcs12(
+                pkcs12_path,
+                passphrase=str(password or "").encode("utf-8"),
+            )
+            metadata = signers.PdfSignatureMetadata(
+                field_name=field_name,
+                reason=reason,
+                location=location,
+            )
+            field_spec = fields.SigFieldSpec(field_name, on_page=int(page_num), box=box)
+            pdf_signer = signers.PdfSigner(metadata, signer=signer,
+                                           new_field_spec=field_spec)
+            with open(source_path, "rb") as source, open(output_path, "wb") as target:
+                writer = IncrementalPdfFileWriter(source)
+                pdf_signer.sign_pdf(writer, output=target)
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+        finally:
+            if temporary_source:
+                try:
+                    os.unlink(temporary_source)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def repair_file(input_path, output_path):
+        """Re-save a damaged-but-readable PDF with rebuilt object streams."""
+        document = None
+        try:
+            document = fitz.open(input_path, raise_on_repair=False)
+            document.save(output_path, garbage=4, deflate=True, clean=True,
+                          deflate_images=True, deflate_fonts=True)
+            return True, ""
+        except Exception as exc:
+            return False, str(exc)
+        finally:
+            if document:
+                document.close()
     
     def add_watermark(self, text=None, font_size=48, color=(0.8, 0.8, 0.8),
                       angle=45, image_path=None, pages=None, opacity=0.28,
