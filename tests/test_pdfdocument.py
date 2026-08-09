@@ -1,4 +1,5 @@
 import fitz
+from pypdf import PdfReader, PdfWriter
 
 from PDFedit import PDFDocument
 
@@ -26,6 +27,26 @@ def test_extract_pages_retargets_outline(tmp_path):
     assert extracted.get_text(0).strip() == "three"
     assert extracted.get_text(1).strip() == "one"
     assert extracted.get_bookmarks() == [(1, "First", 1)]
+    extracted.close()
+    document.close()
+
+
+def test_extract_pages_retargets_named_destinations(tmp_path):
+    source = tmp_path / "named-source.pdf"
+    make_pdf(source, ["one", "two", "three"])
+    reader = PdfReader(str(source))
+    writer = PdfWriter()
+    writer.clone_document_from_reader(reader)
+    writer.add_named_destination("third-page", 2)
+    with source.open("wb") as handle:
+        writer.write(handle)
+
+    document = PDFDocument()
+    assert document.open(str(source))
+    assert document.get_named_destinations() == {"third-page": 2}
+    extracted = document.extract_pages([2, 0])
+    assert extracted is not None
+    assert extracted.get_named_destinations() == {"third-page": 0}
     extracted.close()
     document.close()
 

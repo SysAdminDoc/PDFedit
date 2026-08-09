@@ -1056,6 +1056,8 @@ class PDFDocument:
                 except Exception:
                     pass
 
+            self._preserve_named_destinations(result, selected)
+
             if output_path:
                 result.doc.save(output_path, garbage=4, deflate=True, clean=True)
                 result.filepath = output_path
@@ -1067,6 +1069,46 @@ class PDFDocument:
             result.last_error = str(exc)
             result.close()
             return None
+
+    def get_named_destinations(self):
+        """Return named destinations as ``name -> zero-based page``."""
+        if not self.doc:
+            return {}
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(self.doc.tobytes(garbage=0)))
+            destinations = {}
+            for name, destination in reader.named_destinations.items():
+                page = reader.get_destination_page_number(destination)
+                if page is not None:
+                    destinations[str(name)] = int(page)
+            return destinations
+        except Exception:
+            return {}
+
+    def _preserve_named_destinations(self, result, selected):
+        """Copy named destinations into an extracted document when possible."""
+        destinations = self.get_named_destinations()
+        if not destinations or not result.doc:
+            return
+        try:
+            from pypdf import PdfReader, PdfWriter
+            selected_positions = {old: new for new, old in enumerate(selected)}
+            output_reader = PdfReader(io.BytesIO(result.doc.tobytes(garbage=0)))
+            writer = PdfWriter()
+            writer.clone_document_from_reader(output_reader)
+            for name, old_page in destinations.items():
+                if old_page in selected_positions:
+                    writer.add_named_destination(name, selected_positions[old_page])
+            stream = io.BytesIO()
+            writer.write(stream)
+            result.doc.close()
+            result.doc = fitz.open(stream=stream.getvalue(), filetype="pdf")
+        except Exception:
+            # Named destinations are optional in many PDFs; bookmark and page
+            # content extraction should still succeed if pypdf cannot parse a
+            # non-standard name tree.
+            return
     
     def render_page(self, page_num, zoom=1.0):
         page = self.get_page(page_num)
@@ -1228,6 +1270,20 @@ class PDFDocument:
             self.is_modified = True
             return True
         return False
+
+    def delete_pages(self, page_numbers):
+        """Delete a selected group while keeping at least one page."""
+        if not self.doc:
+            return False
+        selected = sorted({int(page) for page in page_numbers})
+        if (not selected or any(page < 0 or page >= self.page_count for page in selected)
+                or len(selected) >= self.page_count):
+            return False
+        self._save_undo_state()
+        for page in reversed(selected):
+            self.doc.delete_page(page)
+        self.is_modified = True
+        return True
     
     def insert_page(self, index=-1, width=612, height=792):
         if self.doc:
@@ -2218,6 +2274,10 @@ class PDFEditorPro(tk.Tk):
         self.documents = {}
         self.active_doc_id = None
         self.current_page = 0
+        self.selected_pages = {0}
+        self.selection_anchor = 0
+        self.thumbnail_drag_source = None
+        self.thumbnail_dragging = False
         self.zoom = 1.0
         self.tool_mode = ToolMode.SELECT
         self.draw_color = (0, 0, 0)
@@ -2325,6 +2385,8 @@ class PDFEditorPro(tk.Tk):
         tools_menu.add_command(label="Edit Text", command=lambda: self._set_tool(ToolMode.TEXT_EDIT))
         tools_menu.add_command(label="Add Comment", command=lambda: self._set_tool(ToolMode.STICKY_NOTE))
         tools_menu.add_command(label="Add Image...", command=self._add_image)
+        tools_menu.add_command(label="Replace Image...", command=self._replace_image_dialog)
+        tools_menu.add_command(label="Form Field...", command=self._form_field_dialog)
         tools_menu.add_command(label="Add Stamp...", command=self._show_stamp_dialog)
         tools_menu.add_separator()
         tools_menu.add_command(label="Highlight", command=lambda: self._set_tool(ToolMode.HIGHLIGHT))
@@ -2348,6 +2410,10 @@ class PDFEditorPro(tk.Tk):
         doc_menu.add_separator()
         doc_menu.add_command(label="Compress...", command=self._compress_doc)
         doc_menu.add_command(label="Password Protect...", command=self._password_dialog)
+        doc_menu.add_command(label="Digital Signature...", command=self._signature_dialog)
+        doc_menu.add_command(label="Compare with PDF...", command=self._compare_dialog)
+        doc_menu.add_command(label="Attachments...", command=self._attachment_dialog)
+        doc_menu.add_command(label="Edit Bookmarks...", command=self._bookmark_editor)
         menubar.add_cascade(label="Document", menu=doc_menu)
         
         # Export
@@ -2356,6 +2422,7 @@ class PDFEditorPro(tk.Tk):
         export_menu.add_command(label="Export to Word...", command=self._export_word)
         export_menu.add_command(label="Export to Images...", command=self._export_images)
         export_menu.add_command(label="Export Text...", command=self._export_text)
+        export_menu.add_command(label="Export Markdown...", command=self._export_markdown)
         menubar.add_cascade(label="Export", menu=export_menu)
         
         # Help
@@ -2728,6 +2795,12 @@ class PDFEditorPro(tk.Tk):
         
         if not self.doc:
             return
+
+        self.selected_pages = {page for page in self.selected_pages
+                               if 0 <= page < self.doc.page_count}
+        if not self.selected_pages:
+            self.selected_pages = {min(self.current_page, self.doc.page_count - 1)}
+        self.selection_anchor = min(self.selected_pages)
         
         for i in range(self.doc.page_count):
             self._create_thumbnail(i)
@@ -2747,14 +2820,17 @@ class PDFEditorPro(tk.Tk):
         canvas.pack()
         
         # Thumbnail with border
-        border_color = Theme.ACCENT if page_num == self.current_page else Theme.BORDER_LIGHT
+        border_color = (Theme.ACCENT if page_num in self.selected_pages
+                        else Theme.BORDER_LIGHT)
         canvas.create_rectangle(9, 9, 121, 151, fill="white", outline=border_color, width=2)
         canvas.create_image(65, 80, image=photo)
         canvas.create_text(65, 162, text=str(page_num + 1), fill=Theme.FG_SECONDARY,
                           font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SM))
         
         canvas.image = photo
-        canvas.bind("<Button-1>", lambda e, p=page_num: self._goto_page(p))
+        canvas.bind("<Button-1>", lambda e, p=page_num: self._thumbnail_click(e, p))
+        canvas.bind("<B1-Motion>", lambda e, p=page_num: self._thumbnail_drag(e, p))
+        canvas.bind("<ButtonRelease-1>", lambda e, p=page_num: self._thumbnail_drop(e, p))
         canvas.bind("<Button-3>", lambda e, p=page_num: self._page_context(e, p))
         
         self.thumbnails.append(frame)
@@ -2762,8 +2838,85 @@ class PDFEditorPro(tk.Tk):
     def _update_thumbnail_selection(self):
         for i, thumb in enumerate(self.thumbnails):
             canvas = thumb.winfo_children()[0]
-            border_color = Theme.ACCENT if i == self.current_page else Theme.BORDER_LIGHT
+            border_color = Theme.ACCENT if i in self.selected_pages else Theme.BORDER_LIGHT
             canvas.itemconfigure(1, outline=border_color)
+
+    def _thumbnail_click(self, event, page_num):
+        """Select one page, a modifier range, or a Ctrl-toggle group."""
+        if not self.doc:
+            return
+        shift = bool(event.state & 0x0001)
+        control = bool(event.state & 0x0004)
+        if shift:
+            start = min(self.selection_anchor, page_num)
+            end = max(self.selection_anchor, page_num)
+            self.selected_pages = set(range(start, end + 1))
+        elif control:
+            if page_num in self.selected_pages and len(self.selected_pages) > 1:
+                self.selected_pages.remove(page_num)
+            else:
+                self.selected_pages.add(page_num)
+            self.selection_anchor = page_num
+        else:
+            self.selected_pages = {page_num}
+            self.selection_anchor = page_num
+        self.current_page = page_num
+        self.thumbnail_drag_source = self.active_doc_id
+        self.thumbnail_dragging = False
+        self._render_page()
+        self._update_thumbnail_selection()
+        self._update_properties()
+        self._update_ui()
+
+    def _thumbnail_drag(self, event, page_num):
+        if page_num not in self.selected_pages:
+            return
+        self.thumbnail_dragging = True
+        self.thumbnail_drag_source = self.active_doc_id
+        self._status(f"Moving {len(self.selected_pages)} page(s)…")
+
+    def _thumbnail_drop(self, event, page_num):
+        if not self.thumbnail_dragging or not self.doc:
+            self.thumbnail_dragging = False
+            return
+        root_y = self.thumb_frame.winfo_pointery()
+        target = self.doc.page_count
+        for index, frame in enumerate(self.thumbnails):
+            midpoint = frame.winfo_rooty() + frame.winfo_height() / 2
+            if root_y < midpoint:
+                target = index
+                break
+        selected = sorted(self.selected_pages)
+        page_order = list(range(self.doc.page_count))
+        remaining = [page for page in page_order if page not in set(selected)]
+        insertion = target - sum(page < target for page in selected)
+        insertion = max(0, min(insertion, len(remaining)))
+        new_order = remaining[:insertion] + selected + remaining[insertion:]
+        if self.doc.move_pages(selected, target):
+            positions = {old: new for new, old in enumerate(new_order)}
+            self.selected_pages = {positions[page] for page in selected}
+            self.current_page = min(self.selected_pages)
+            self.selection_anchor = self.current_page
+            self._refresh_all()
+        self.thumbnail_dragging = False
+        self.thumbnail_drag_source = None
+
+    def _drop_pages_on_doc(self, doc_id):
+        """Complete a thumbnail drag over another document tab."""
+        if (not self.thumbnail_dragging or doc_id == self.active_doc_id
+                or doc_id not in self.documents or not self.doc):
+            return
+        source = self.doc
+        target = self.documents[doc_id]
+        selected = sorted(self.selected_pages)
+        if source.move_pages_to(target, selected):
+            self.thumbnail_dragging = False
+            self.thumbnail_drag_source = None
+            self.active_doc_id = doc_id
+            self.current_page = max(0, target.page_count - len(selected))
+            self.selected_pages = set(range(self.current_page, target.page_count))
+            self.selection_anchor = self.current_page
+            self._refresh_all()
     
     def _refresh_bookmarks(self):
         self.bookmarks_tree.delete(*self.bookmarks_tree.get_children())
@@ -2977,6 +3130,7 @@ class PDFEditorPro(tk.Tk):
         tab = TabButton(self.tab_bar, title=title, doc_id=doc_id,
                        on_select=self._switch_to_doc, on_close=self._close_tab_by_id)
         tab.pack(side=tk.LEFT, padx=1)
+        tab.bind("<ButtonRelease-1>", lambda e, did=doc_id: self._drop_pages_on_doc(did), add="+")
         self.tabs[doc_id] = tab
     
     def _remove_tab(self, doc_id):
@@ -3001,6 +3155,8 @@ class PDFEditorPro(tk.Tk):
         
         self.active_doc_id = doc_id
         self.current_page = 0
+        self.selected_pages = {0}
+        self.selection_anchor = 0
         self.zoom = 1.0
         
         # Clear text editing state
@@ -3710,12 +3866,23 @@ class PDFEditorPro(tk.Tk):
     def _watermark_dialog(self):
         if not self.doc:
             return
-        dialog = self._create_dialog("Add Watermark", 380, 280)
+        dialog = self._create_dialog("Add Watermark", 460, 420)
         
         tk.Label(dialog, text="Watermark Text:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_LG, Theme.PAD_SM))
         text_entry = ModernEntry(dialog, width=30)
         text_entry.pack(ipady=4)
         text_entry.insert(0, "CONFIDENTIAL")
+
+        image_var = tk.StringVar()
+        image_frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+        image_frame.pack(fill=tk.X, padx=Theme.PAD_LG, pady=Theme.PAD_SM)
+        tk.Label(image_frame, text="Image (optional):", bg=Theme.BG_SECONDARY,
+                 fg=Theme.FG_PRIMARY).pack(side=tk.LEFT)
+        tk.Entry(image_frame, textvariable=image_var, width=26, bg=Theme.BG_INPUT,
+                 fg=Theme.FG_PRIMARY, insertbackground=Theme.FG_PRIMARY,
+                 relief=tk.FLAT).pack(side=tk.LEFT, padx=Theme.PAD_SM, ipady=3)
+        tk.Button(image_frame, text="Browse", command=lambda: image_var.set(
+            filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.webp")]))).pack(side=tk.LEFT)
         
         tk.Label(dialog, text="Font Size:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_SM))
         size_var = tk.StringVar(value="48")
@@ -3724,12 +3891,42 @@ class PDFEditorPro(tk.Tk):
         tk.Label(dialog, text="Rotation:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_SM))
         angle_var = tk.StringVar(value="45")
         tk.Spinbox(dialog, from_=-90, to=90, textvariable=angle_var, width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+
+        tk.Label(dialog, text="Opacity:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_SM))
+        opacity_var = tk.StringVar(value="0.28")
+        tk.Spinbox(dialog, from_=0.05, to=1.0, increment=0.05, textvariable=opacity_var,
+                   width=10, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY).pack()
+
+        tk.Label(dialog, text="Pages (optional, e.g. 1-3,7; blank = all):",
+                 bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_SM))
+        pages_entry = ModernEntry(dialog, width=28)
+        pages_entry.pack(ipady=3)
         
         def apply():
-            self.doc.add_watermark(text_entry.get(), int(size_var.get()), angle=float(angle_var.get()))
-            self._render_page()
-            dialog.destroy()
-            self._status("Watermark added")
+            try:
+                spec = pages_entry.get_value().strip()
+                pages = None
+                if spec:
+                    pages = []
+                    for token in spec.split(","):
+                        if "-" in token:
+                            start, end = (int(value) for value in token.split("-", 1))
+                            pages.extend(range(start - 1, end))
+                        else:
+                            pages.append(int(token) - 1)
+                    if any(page < 0 or page >= self.doc.page_count for page in pages):
+                        raise ValueError("page range is outside this document")
+                text = text_entry.get_value().strip() or None
+                image = image_var.get().strip() or None
+                if not self.doc.add_watermark(text=text, image_path=image, pages=pages,
+                                              font_size=float(size_var.get()), angle=float(angle_var.get()),
+                                              opacity=float(opacity_var.get())):
+                    raise ValueError(self.doc.last_error or "unable to add watermark")
+                self._render_page()
+                dialog.destroy()
+                self._status("Watermark added")
+            except (ValueError, TypeError) as exc:
+                messagebox.showerror("Watermark", str(exc))
         
         ModernButton(dialog, text="Apply to All Pages", command=apply, style="primary", width=160).pack(pady=Theme.PAD_LG)
     
@@ -3738,7 +3935,7 @@ class PDFEditorPro(tk.Tk):
             return
         dialog = self._create_dialog("Headers & Footers", 450, 320)
         
-        tk.Label(dialog, text="Placeholders: {page}, {pages}, {date}", bg=Theme.BG_SECONDARY,
+        tk.Label(dialog, text="Placeholders: {page}, {total}, {date}, {time}", bg=Theme.BG_SECONDARY,
                 fg=Theme.FG_MUTED, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_XS)).pack(pady=(Theme.PAD_MD, Theme.PAD_SM))
         
         tk.Label(dialog, text="Header:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_SM, Theme.PAD_XS))
@@ -3749,6 +3946,27 @@ class PDFEditorPro(tk.Tk):
         footer_entry = ModernEntry(dialog, width=45)
         footer_entry.pack(ipady=4)
         footer_entry.insert(0, "Page {page} of {pages}")
+
+        template_frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+        template_frame.pack(fill=tk.X, padx=Theme.PAD_LG, pady=Theme.PAD_SM)
+        tk.Label(template_frame, text="Template:", bg=Theme.BG_SECONDARY,
+                 fg=Theme.FG_PRIMARY).pack(side=tk.LEFT)
+        templates = {
+            "Custom": ("", "Page {page} of {total}"),
+            "Review": ("Review copy — {date}", "Page {page} of {total}"),
+            "Confidential": ("CONFIDENTIAL", "{page} / {total}"),
+        }
+        template_var = tk.StringVar(value="Custom")
+        template_box = ttk.Combobox(template_frame, textvariable=template_var,
+                                    values=list(templates), state="readonly", width=25)
+        template_box.pack(side=tk.LEFT, padx=Theme.PAD_SM)
+        def choose_template(event=None):
+            header, footer = templates[template_var.get()]
+            header_entry.delete(0, tk.END)
+            header_entry.insert(0, header)
+            footer_entry.delete(0, tk.END)
+            footer_entry.insert(0, footer)
+        template_box.bind("<<ComboboxSelected>>", choose_template)
         
         tk.Label(dialog, text="Font Size:", bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=(Theme.PAD_MD, Theme.PAD_XS))
         size_var = tk.StringVar(value="10")
@@ -3814,14 +4032,255 @@ class PDFEditorPro(tk.Tk):
                 return
             output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
             if output:
-                try:
-                    self.doc.doc.save(output, encryption=fitz.PDF_ENCRYPT_AES_256, user_pw=pass_entry.get())
+                if self.doc.protect(output, pass_entry.get()):
                     dialog.destroy()
                     self._status("Protected PDF saved")
-                except Exception as e:
-                    messagebox.showerror("Error", str(e))
+                else:
+                    messagebox.showerror("Error", self.doc.last_error or "Unable to protect PDF")
         
         ModernButton(dialog, text="Save Protected", command=apply, style="primary", width=140).pack(pady=Theme.PAD_LG)
+
+    def _form_field_dialog(self):
+        if not self.doc:
+            return
+        dialog = self._create_dialog("Add Form Field", 430, 430)
+
+        def row(label, default=""):
+            frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+            frame.pack(fill=tk.X, padx=Theme.PAD_LG, pady=Theme.PAD_SM)
+            tk.Label(frame, text=label, width=12, anchor="w", bg=Theme.BG_SECONDARY,
+                     fg=Theme.FG_PRIMARY).pack(side=tk.LEFT)
+            entry = ModernEntry(frame, width=32)
+            entry.pack(side=tk.LEFT, ipady=3)
+            if default:
+                entry.insert(0, default)
+            return entry
+
+        name_entry = row("Name", "field_1")
+        type_frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+        type_frame.pack(fill=tk.X, padx=Theme.PAD_LG, pady=Theme.PAD_SM)
+        tk.Label(type_frame, text="Type", width=12, anchor="w", bg=Theme.BG_SECONDARY,
+                 fg=Theme.FG_PRIMARY).pack(side=tk.LEFT)
+        type_var = tk.StringVar(value="text")
+        ttk.Combobox(type_frame, textvariable=type_var,
+                     values=["text", "checkbox", "radio", "combo", "list", "signature"],
+                     state="readonly", width=29).pack(side=tk.LEFT)
+        value_entry = row("Value")
+        rect_entry = row("Rectangle", "36,100,240,128")
+        options_entry = row("Options", "")
+        tk.Label(dialog, text="Coordinates are PDF points: x0,y0,x1,y1",
+                 bg=Theme.BG_SECONDARY, fg=Theme.FG_MUTED,
+                 font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_XS)).pack(pady=Theme.PAD_SM)
+
+        def apply():
+            try:
+                rect = tuple(float(value.strip()) for value in rect_entry.get().split(","))
+                if len(rect) != 4:
+                    raise ValueError("rectangle needs four values")
+                options = [value.strip() for value in options_entry.get().split(",") if value.strip()]
+                if not self.doc.add_form_field(self.current_page, name_entry.get().strip(), rect,
+                                               field_type=type_var.get(), value=value_entry.get(),
+                                               options=options):
+                    raise ValueError(self.doc.last_error or "unable to add form field")
+                dialog.destroy()
+                self._render_page()
+                self._status("Form field added")
+            except ValueError as exc:
+                messagebox.showerror("Form Field", str(exc))
+
+        ModernButton(dialog, text="Add Field", command=apply, style="primary", width=120).pack(pady=Theme.PAD_LG)
+
+    def _signature_dialog(self):
+        if not self.doc:
+            return
+        dialog = self._create_dialog("Digital Signature", 480, 360)
+        path_var = tk.StringVar()
+
+        def path_row(label, variable, browse=False):
+            frame = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+            frame.pack(fill=tk.X, padx=Theme.PAD_LG, pady=Theme.PAD_SM)
+            tk.Label(frame, text=label, width=13, anchor="w", bg=Theme.BG_SECONDARY,
+                     fg=Theme.FG_PRIMARY).pack(side=tk.LEFT)
+            entry = tk.Entry(frame, textvariable=variable, width=34, bg=Theme.BG_INPUT,
+                             fg=Theme.FG_PRIMARY, insertbackground=Theme.FG_PRIMARY, relief=tk.FLAT)
+            entry.pack(side=tk.LEFT, ipady=3)
+            if browse:
+                tk.Button(frame, text="Browse", command=lambda: variable.set(
+                    filedialog.askopenfilename(filetypes=[("PKCS#12", "*.p12 *.pfx"), ("All files", "*.*")]))).pack(side=tk.LEFT, padx=4)
+
+        path_row("Certificate", path_var, browse=True)
+        pass_var = tk.StringVar()
+        path_row("Password", pass_var)
+        field_var = tk.StringVar(value="Signature")
+        path_row("Field name", field_var)
+        reason_var = tk.StringVar(value="Approved")
+        path_row("Reason", reason_var)
+        location_var = tk.StringVar()
+        path_row("Location", location_var)
+        tk.Label(dialog, text="The certificate stays local; only the selected output is written.",
+                 bg=Theme.BG_SECONDARY, fg=Theme.FG_MUTED,
+                 font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_XS)).pack(pady=Theme.PAD_SM)
+
+        def apply():
+            output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
+            if not output:
+                return
+            if self.doc.sign(output, path_var.get(), pass_var.get(), field_var.get(),
+                              self.current_page, (36, 36, 240, 100),
+                              reason_var.get(), location_var.get()):
+                dialog.destroy()
+                self._status("Signed PDF saved")
+            else:
+                messagebox.showerror("Signature", self.doc.last_error or "Unable to sign PDF")
+
+        ModernButton(dialog, text="Sign and Save", command=apply, style="primary", width=140).pack(pady=Theme.PAD_LG)
+
+    def _compare_dialog(self):
+        if not self.doc:
+            return
+        other = filedialog.askopenfilename(title="Choose PDF to compare",
+                                           filetypes=[("PDF", "*.pdf")])
+        if not other:
+            return
+        result = self.doc.compare(other)
+        if result.get("error"):
+            messagebox.showerror("Compare", result["error"])
+            return
+        changed = result.get("changed_pages", [])
+        message = (f"Changed pages: {', '.join(str(page + 1) for page in changed) or 'none'}\n"
+                   f"Added pages: {result.get('added_pages', 0)}\n"
+                   f"Removed pages: {result.get('removed_pages', 0)}")
+        if messagebox.askyesno("Compare PDFs", message + "\n\nSave side-by-side comparison PDF?"):
+            output = filedialog.asksaveasfilename(defaultextension=".pdf",
+                                                  filetypes=[("PDF", "*.pdf")])
+            if output and self.doc.create_comparison_pdf(other, output):
+                self._status("Comparison PDF saved")
+            elif output:
+                messagebox.showerror("Compare", self.doc.last_error or "Unable to save comparison")
+
+    def _attachment_dialog(self):
+        if not self.doc:
+            return
+        dialog = self._create_dialog("Attachments", 520, 360)
+        listbox = tk.Listbox(dialog, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY,
+                             selectbackground=Theme.ACCENT, relief=tk.FLAT)
+        listbox.pack(fill=tk.BOTH, expand=True, padx=Theme.PAD_LG, pady=Theme.PAD_LG)
+
+        def refresh():
+            listbox.delete(0, tk.END)
+            for item in self.doc.list_attachments():
+                listbox.insert(tk.END, f"{item['name']} ({item['size']} bytes)")
+
+        def add():
+            path = filedialog.askopenfilename()
+            if path and self.doc.add_attachment(path):
+                refresh()
+                self._status("Attachment added")
+            elif path:
+                messagebox.showerror("Attachments", self.doc.last_error or "Unable to add attachment")
+
+        def extract():
+            selection = listbox.curselection()
+            attachments = self.doc.list_attachments()
+            if not selection or selection[0] >= len(attachments):
+                return
+            output = filedialog.asksaveasfilename(initialfile=attachments[selection[0]]["filename"])
+            if output and self.doc.extract_attachment(attachments[selection[0]]["name"], output):
+                self._status("Attachment extracted")
+
+        def remove():
+            selection = listbox.curselection()
+            attachments = self.doc.list_attachments()
+            if selection and selection[0] < len(attachments):
+                self.doc.remove_attachment(attachments[selection[0]]["name"])
+                refresh()
+                self._status("Attachment removed")
+
+        buttons = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+        buttons.pack(pady=(0, Theme.PAD_LG))
+        ModernButton(buttons, text="Add", command=add, style="primary", width=90).pack(side=tk.LEFT, padx=3)
+        ModernButton(buttons, text="Extract", command=extract, width=90).pack(side=tk.LEFT, padx=3)
+        ModernButton(buttons, text="Remove", command=remove, style="danger", width=90).pack(side=tk.LEFT, padx=3)
+        ModernButton(buttons, text="Close", command=dialog.destroy, width=90).pack(side=tk.LEFT, padx=3)
+        refresh()
+
+    def _bookmark_editor(self):
+        if not self.doc:
+            return
+        dialog = self._create_dialog("Bookmark Editor", 520, 430)
+        tree = ttk.Treeview(dialog, columns=("page",), show="tree headings")
+        tree.heading("#0", text="Title")
+        tree.heading("page", text="Page")
+        tree.column("page", width=70, anchor="center")
+        tree.pack(fill=tk.BOTH, expand=True, padx=Theme.PAD_LG, pady=Theme.PAD_LG)
+        dragging = {"item": None}
+
+        def rows():
+            return self.doc.get_bookmarks()
+
+        def refresh():
+            tree.delete(*tree.get_children())
+            parents = {0: ""}
+            for index, (level, title, page) in enumerate(rows()):
+                parent = parents.get(level - 1, "")
+                item = tree.insert(parent, "end", text=title, values=(page + 1,), tags=(str(index),))
+                parents[level] = item
+
+        def add():
+            title = f"Page {self.current_page + 1}"
+            self.doc.add_bookmark(title, self.current_page)
+            refresh()
+            self._refresh_bookmarks()
+
+        def remove():
+            selection = tree.selection()
+            if not selection:
+                return
+            index = int(tree.item(selection[0], "tags")[0])
+            self.doc.remove_bookmark(index)
+            refresh()
+            self._refresh_bookmarks()
+
+        def move(delta):
+            selection = tree.selection()
+            if not selection:
+                return
+            index = int(tree.item(selection[0], "tags")[0])
+            bookmarks = rows()
+            target = index + delta
+            if not 0 <= target < len(bookmarks):
+                return
+            bookmarks[index], bookmarks[target] = bookmarks[target], bookmarks[index]
+            self.doc.set_bookmarks(bookmarks)
+            refresh()
+
+        def on_press(event):
+            dragging["item"] = tree.identify_row(event.y)
+
+        def on_release(event):
+            source = dragging.get("item")
+            target = tree.identify_row(event.y)
+            dragging["item"] = None
+            if not source or not target or source == target:
+                return
+            source_index = int(tree.item(source, "tags")[0])
+            target_index = int(tree.item(target, "tags")[0])
+            bookmarks = rows()
+            item = bookmarks.pop(source_index)
+            bookmarks.insert(target_index, item)
+            self.doc.set_bookmarks(bookmarks)
+            refresh()
+
+        tree.bind("<ButtonPress-1>", on_press)
+        tree.bind("<ButtonRelease-1>", on_release)
+        buttons = tk.Frame(dialog, bg=Theme.BG_SECONDARY)
+        buttons.pack(pady=(0, Theme.PAD_LG))
+        ModernButton(buttons, text="Add Current", command=add, style="primary", width=105).pack(side=tk.LEFT, padx=2)
+        ModernButton(buttons, text="Move Up", command=lambda: move(-1), width=85).pack(side=tk.LEFT, padx=2)
+        ModernButton(buttons, text="Move Down", command=lambda: move(1), width=95).pack(side=tk.LEFT, padx=2)
+        ModernButton(buttons, text="Remove", command=remove, style="danger", width=85).pack(side=tk.LEFT, padx=2)
+        ModernButton(buttons, text="Close", command=dialog.destroy, width=80).pack(side=tk.LEFT, padx=2)
+        refresh()
     
     # =========================================================================
     # TEXT EDITING - INLINE
@@ -4102,22 +4561,38 @@ class PDFEditorPro(tk.Tk):
         if not self.doc or self.doc.page_count <= 1:
             messagebox.showwarning("Warning", "Cannot delete the only page")
             return
-        if messagebox.askyesno("Delete Page", f"Delete page {page_num + 1}?"):
-            self.doc.delete_page(page_num)
-            if self.current_page >= self.doc.page_count:
-                self.current_page = self.doc.page_count - 1
+        selected = (set(self.selected_pages) if page_num in self.selected_pages
+                    else {page_num})
+        selected = {page for page in selected if 0 <= page < self.doc.page_count}
+        if len(selected) >= self.doc.page_count:
+            messagebox.showwarning("Warning", "Cannot delete the only page")
+            return
+        label = (f"Delete {len(selected)} selected pages?" if len(selected) > 1
+                 else f"Delete page {page_num + 1}?")
+        if messagebox.askyesno("Delete Page", label):
+            if not self.doc.delete_pages(selected):
+                messagebox.showerror("Error", self.doc.last_error or "Delete failed")
+                return
+            self.current_page = min(page_num, self.doc.page_count - 1)
+            self.selected_pages = {self.current_page}
+            self.selection_anchor = self.current_page
             self._refresh_all()
     
     def _extract_page(self):
         if not self.doc:
             return
-        output = filedialog.asksaveasfilename(defaultextension=".pdf", initialname=f"page_{self.current_page+1}.pdf")
+        selected = sorted(self.selected_pages) or [self.current_page]
+        default_name = (f"pages_{selected[0] + 1}-{selected[-1] + 1}.pdf"
+                        if len(selected) > 1 else f"page_{selected[0] + 1}.pdf")
+        output = filedialog.asksaveasfilename(defaultextension=".pdf",
+                                              initialfile=default_name)
         if output:
-            new_doc = fitz.open()
-            new_doc.insert_pdf(self.doc.doc, from_page=self.current_page, to_page=self.current_page)
-            new_doc.save(output)
-            new_doc.close()
-            self._status(f"Page extracted to {os.path.basename(output)}")
+            new_doc = self.doc.extract_pages(selected, output)
+            if new_doc:
+                new_doc.close()
+                self._status(f"{len(selected)} page(s) extracted to {os.path.basename(output)}")
+            else:
+                messagebox.showerror("Error", self.doc.last_error or "Extraction failed")
     
     def _rotate(self, angle):
         self._rotate_page(self.current_page, angle)
@@ -4137,6 +4612,40 @@ class PDFEditorPro(tk.Tk):
         filepath = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.bmp *.webp")])
         if filepath:
             self._start_image_placement(filepath)
+
+    def _replace_image_dialog(self):
+        if not self.doc:
+            return
+        images = self.doc.get_page_images(self.current_page)
+        if not images:
+            messagebox.showinfo("Replace Image", "There are no embedded images on this page.")
+            return
+        dialog = self._create_dialog("Replace Image", 420, 300)
+        tk.Label(dialog, text="Choose the image occurrence to replace:",
+                 bg=Theme.BG_SECONDARY, fg=Theme.FG_PRIMARY).pack(pady=Theme.PAD_LG)
+        listbox = tk.Listbox(dialog, bg=Theme.BG_INPUT, fg=Theme.FG_PRIMARY,
+                             selectbackground=Theme.ACCENT, relief=tk.FLAT, height=7)
+        listbox.pack(fill=tk.BOTH, expand=True, padx=Theme.PAD_LG)
+        for image in images:
+            rect = image["rects"][0] if image["rects"] else (0, 0, 0, 0)
+            listbox.insert(tk.END, f"Image {image['index'] + 1} ({image['width']}×{image['height']}) at {tuple(round(v) for v in rect)}")
+        listbox.selection_set(0)
+
+        def replace():
+            selection = listbox.curselection()
+            if not selection:
+                return
+            path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.bmp *.webp")])
+            if not path:
+                return
+            if self.doc.replace_image(self.current_page, images[selection[0]]["index"], path):
+                dialog.destroy()
+                self._refresh_all()
+                self._status("Image replaced")
+            else:
+                messagebox.showerror("Replace Image", self.doc.last_error or "Unable to replace image")
+
+        ModernButton(dialog, text="Replace", command=replace, style="primary", width=110).pack(pady=Theme.PAD_LG)
     
     def _start_image_placement(self, filepath):
         """Start interactive image placement"""
@@ -4400,6 +4909,18 @@ class PDFEditorPro(tk.Tk):
                 messagebox.showinfo("Done", "Text extracted")
             else:
                 messagebox.showerror("Error", "Export failed")
+
+    def _export_markdown(self):
+        if not self.doc:
+            return
+        output = filedialog.asksaveasfilename(defaultextension=".md",
+                                              filetypes=[("Markdown", "*.md")])
+        if output:
+            if self.doc.export_markdown(output):
+                self._status("Markdown exported")
+                messagebox.showinfo("Done", "Markdown extracted")
+            else:
+                messagebox.showerror("Error", self.doc.last_error or "Export failed")
     
     # =========================================================================
     # MISC
